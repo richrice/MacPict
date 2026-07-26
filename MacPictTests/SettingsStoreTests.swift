@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import Combine
 import Foundation
 import XCTest
 @testable import MacPict
@@ -58,6 +59,59 @@ final class SettingsStoreTests: XCTestCase {
     func testAStoredValueOfTheWrongTypeFallsBackToTheCaptureDefault() {
         defaults.set("⌃⌥ C", forKey: "captureHotkey")
         XCTAssertEqual(SettingsStore(defaults: defaults).hotkey, .captureDefault)
+    }
+
+    func testHotkeyDidChangeFiresAfterTheNewValueIsReadable() {
+        let store = SettingsStore(defaults: defaults)
+        let chosen = HotkeyShortcut(keyCode: UInt32(kVK_F14), carbonModifiers: 0, displayString: "F14")
+        var observed: [HotkeyShortcut] = []
+        var valueInsideSink: HotkeyShortcut?
+
+        // `$hotkey` publishes from willSet and would still report the old value here.
+        let cancellable = store.hotkeyDidChange.sink { shortcut in
+            observed.append(shortcut)
+            valueInsideSink = store.hotkey
+        }
+        store.hotkey = chosen
+        cancellable.cancel()
+
+        XCTAssertEqual(observed, [chosen])
+        XCTAssertEqual(valueInsideSink, chosen, "the subject must fire after the value is stored")
+    }
+
+    func testHotkeyDidChangeFiresAfterTheNewValueIsPersisted() {
+        let store = SettingsStore(defaults: defaults)
+        let chosen = HotkeyShortcut(keyCode: UInt32(kVK_F15), carbonModifiers: 0, displayString: "F15")
+        var reloadedInsideSink: HotkeyShortcut?
+
+        let cancellable = store.hotkeyDidChange.sink { [defaults] _ in
+            reloadedInsideSink = SettingsStore(defaults: defaults!).hotkey
+        }
+        store.hotkey = chosen
+        cancellable.cancel()
+
+        XCTAssertEqual(reloadedInsideSink, chosen, "persistence must complete before the subject fires")
+    }
+
+    func testASynchronousWriteBackInsideTheSinkSurvives() {
+        let store = SettingsStore(defaults: defaults)
+        let rejected = HotkeyShortcut(keyCode: UInt32(kVK_F16), carbonModifiers: 0, displayString: "F16")
+        let corrected = HotkeyShortcut(keyCode: UInt32(kVK_F17), carbonModifiers: 0, displayString: "F17")
+        var hasWrittenBack = false
+
+        // The coordinator's exact move: a registration failed, so it puts the working shortcut
+        // back synchronously. It must survive the assignment that is still unwinding.
+        let cancellable = store.hotkeyDidChange.sink { _ in
+            guard !hasWrittenBack else { return }
+            hasWrittenBack = true
+            store.hotkey = corrected
+        }
+        store.hotkey = rejected
+        cancellable.cancel()
+
+        XCTAssertTrue(hasWrittenBack)
+        XCTAssertEqual(store.hotkey, corrected)
+        XCTAssertEqual(SettingsStore(defaults: defaults).hotkey, corrected, "the rejected shortcut must not stay persisted")
     }
 
     func testRestoreDefaultHotkeyResetsAndPersists() {

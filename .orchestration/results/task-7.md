@@ -959,3 +959,136 @@ window is never shown.
 - Untested by me, unchanged from the previous round: the settings window actually appearing, ⌘,
   from the app menu end to end, and the hotkey firing from another frontmost application. I did
   not launch the app.
+
+---
+
+# Follow-up — synchronous write-back on the settled channel
+
+Applied. Ownership unchanged: `MacPict/AppCoordinator.swift` and
+`MacPictTests/CoordinatorTests.swift` only. `SettingsStore.swift` was not touched; I waited for
+Task 2's `hotkeyDidChange` to land before building, then verified their ordering — `persistHotkey()`
+runs *before* `send`, so the nested write-back's own `persistHotkey()` is the last thing to reach
+`UserDefaults`.
+
+## What changed
+
+```swift
+hotkeyCancellable = settings.hotkeyDidChange
+    .removeDuplicates()
+    .sink { [weak self] shortcut in
+        MainActor.assumeIsolated {
+            guard let self else { return }
+            guard !self.isRevertingStoredShortcut else { return }
+            self.apply(shortcut)
+        }
+    }
+```
+
+- Subscribed to `settings.hotkeyDidChange` instead of `settings.$hotkey`.
+- `.dropFirst()` removed.
+- `.removeDuplicates()` kept.
+- The re-entrancy guard kept, its doc comment rewritten — it no longer describes an async hop.
+- `revertStoredShortcut(to:)` is now a plain synchronous method; the `Task { @MainActor … }` is
+  gone. `grep -n "Task {"` over the file finds only the pre-existing capture and flash tasks.
+- `stop()` still clears `hotkeyCancellable` first, unchanged.
+
+## `dropFirst` on a `PassthroughSubject` — verified, not assumed
+
+You asked me to check rather than take your word for it. I ran a standalone Combine probe.
+
+```
+sends            : ["F19", "F18", "F17"]
+with dropFirst   : ["F18", "F17"]     ← the user's first real change is gone
+without dropFirst: ["F19", "F18", "F17"]
+```
+
+A late subscriber attached after three sends received `[]`, confirming there is no replay to skip.
+So your reading is right: with `dropFirst()` the first shortcut the user picks after launch would
+be silently ignored — the picker would move, nothing would register, and the old shortcut would
+stay live with no error shown anywhere.
+
+**One thing worth adding, because it makes the bug nastier than it looks.** I first probed with the
+sequence `F19, F19, F18` and got *identical* output with and without `dropFirst()`:
+
+```
+sends            : ["F19", "F19", "F18"]
+with dropFirst   : ["F19", "F18"]
+without dropFirst: ["F19", "F18"]
+```
+
+`dropFirst` ate the first `F19` and `removeDuplicates` would have eaten the second, so the two
+operators cancel out. A user who picked a shortcut and then re-picked the same one — or any test
+written with a repeated value — would see correct behaviour and never suspect the defect. My probe
+very nearly told me the operator was harmless. It is not; it just hides when the first change is
+immediately repeated.
+
+I also confirmed the nested-send timing the guard depends on: sending from inside a subject's own
+sink is delivered **synchronously and re-entrantly**, so the flag is set for exactly the nested
+callback it has to suppress (`["in:outer", "in:inner", "guardWas:true", "guardWas:false"]`).
+
+## Tests changed, and why
+
+- **`testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive`** was `async throws` with a
+  bounded `awaitStoredShortcut(…)` wait between the assignment and the assertions. That wait
+  existed *only* to accommodate the hop, so it is now `throws`, with nothing at all between
+  `settings.hotkey = doomed` and the assertions. The assertions themselves are untouched. The
+  `awaitStoredShortcut` helper was deleted rather than left unused.
+- **`testTheRevertedShortcutIsStoredAndPersistedBeforeTheAssignmentReturns`** — new, and the one
+  you asked for. F14 is blocked and selected; the very next statements assert
+  `settings.hotkey == .captureDefault` and that a **second `SettingsStore` over the same defaults**
+  reads `.captureDefault`. No `await`, no `yield`, no `sleep` — if any part of the write-back were
+  deferred, the test would read the dead shortcut.
+
+No other test changed. No assertion was weakened anywhere.
+
+## Mutation checks (each applied alone, `-only-testing:MacPictTests/CoordinatorTests`)
+
+| Mutation | Result |
+|---|---|
+| E — `.dropFirst()` put back on `hotkeyDidChange` | exit 65, **`testChangingTheStoredShortcutReRegistersWithTheNewOne` fails** (the first change is swallowed: `registeredShortcuts == [⌃⌥ C]`). Two more tests fall with it, since every test that makes a change loses its first one |
+| F — re-entrancy guard removed from the sink | exit 65, **`testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive` fails** — the nested `send` comes straight back round as a second registration, exactly as it did on the `$hotkey` channel |
+| G — the async hop reinstated in `revertStoredShortcut` | exit 65, **`testTheRevertedShortcutIsStoredAndPersistedBeforeTheAssignmentReturns` fails**, along with the now-synchronous persistence test. This is the check that the new test really does pin the closed window rather than passing by luck |
+
+All reverted from a saved copy; `grep -c MUTATION MacPict/AppCoordinator.swift` → 0 before the
+final gate.
+
+## The window is closed — and here is why, precisely
+
+Walking the whole nested sequence for `settings.hotkey = doomed`:
+
+1. the stored property is updated to `doomed`; outer `didSet` begins;
+2. `persistHotkey()` writes `doomed`;
+3. `hotkeyDidChange.send(doomed)` → sink → `apply(doomed)` → registration fails, manager reverts,
+   `activeShortcut == ⌃⌥ C`;
+4. `revertStoredShortcut(to: ⌃⌥ C)` sets the guard and assigns `settings.hotkey = ⌃⌥ C`;
+5. inner `didSet`: `persistHotkey()` writes `⌃⌥ C` — **the last write to reach `UserDefaults`** —
+   then `send(⌃⌥ C)`, which the guard swallows;
+6. the outer `didSet` returns.
+
+Control never leaves the main actor between (1) and (6), so there is no turn of the run loop, and
+no point at which anything outside this stack could observe or crash with the dead shortcut stored
+or persisted. The residual hole I reported at the end of the previous round — "a hard kill inside
+that window would persist a shortcut that does not work" — no longer exists. It required the store
+to publish from `willSet`; on the settled channel it cannot arise.
+
+## Validation (final, real output)
+
+| Command | Exit code | Result |
+|---|---|---|
+| `./scripts/bootstrap.sh` | 0 | project regenerated |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **` |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **Executed 157 tests, with 0 failures (0 unexpected)** |
+
+`CoordinatorTests`: 25 tests, 0 failures (24 → 25). 157 total, up from 153 — my one new test plus
+three added by other workers in the same window. `grep -E "warning:"` over both logs, excluding the
+`appintentsmetadataprocessor` tool note → no output.
+
+## Remaining uncertainties
+
+- Unchanged from the previous round: whether macOS returns `eventHotKeyExistsErr` for a
+  *cross-process* duplicate — the case the user will actually hit — is not testable from here; the
+  conflict path is proven with an in-process duplicate.
+- The capture-item title still follows `activeShortcut`, so the two tests asserting it depend on
+  F19/F18 being free on the machine; each asserts `activeShortcut` first so such a failure names
+  its own cause.
+- I did not launch the app.

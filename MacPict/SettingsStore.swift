@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import Combine
 import Foundation
 
 struct HotkeyPresetGroup: Identifiable, Sendable {
@@ -68,7 +69,20 @@ final class SettingsStore: ObservableObject {
 
     private let defaults: UserDefaults
 
-    @Published var hotkey: HotkeyShortcut { didSet { persistHotkey() } }
+    /// Fires after `hotkey` has been stored and persisted, unlike `$hotkey`, which publishes from
+    /// `willSet`. A subscriber that writes a corrected value back must use this one, or its write
+    /// is flattened by the assignment still in flight.
+    let hotkeyDidChange = PassthroughSubject<HotkeyShortcut, Never>()
+
+    // Persist before sending: a subscriber that writes back triggers a nested `didSet` whose
+    // `persistHotkey()` completes before this one returns, so the corrected value is the last
+    // thing written to UserDefaults. Sending first would leave the rejected shortcut persisted.
+    @Published var hotkey: HotkeyShortcut {
+        didSet {
+            persistHotkey()
+            hotkeyDidChange.send(hotkey)
+        }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

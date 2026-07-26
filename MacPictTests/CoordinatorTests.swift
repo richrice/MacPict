@@ -169,17 +169,6 @@ final class CoordinatorTests: XCTestCase {
         )
     }
 
-    /// The write-back of a reverted shortcut is deliberately deferred by one turn of the main
-    /// actor (see `AppCoordinator.revertStoredShortcut`), so a test asserting on it has to let
-    /// that turn happen. Bounded, and every assertion is still made afterwards, so a revert that
-    /// never arrives fails the test rather than hanging it.
-    private func awaitStoredShortcut(_ expected: HotkeyShortcut) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while settings.hotkey != expected, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(2))
-        }
-    }
-
     /// The settings observer is delivered on `OperationQueue.main`, which may hand the block back
     /// on a later turn of the loop rather than during `post`.
     private func awaitSettingsWindowController() async throws -> SettingsWindowController {
@@ -521,14 +510,13 @@ final class CoordinatorTests: XCTestCase {
 
     /// The trap this closes: without the write-back the failed shortcut stays persisted, and the
     /// next launch — a fresh process with nothing to revert to — comes up with no hotkey at all.
-    func testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive() async throws {
+    func testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive() throws {
         coordinator.start()
         XCTAssertEqual(hotkeyManager.activeShortcut, .captureDefault)
         let doomed = try preset("F18")
         block(doomed)
 
         settings.hotkey = doomed
-        try await awaitStoredShortcut(.captureDefault)
 
         // Asked for once, and once only: the write-back must not come back round as a second
         // registration.
@@ -544,6 +532,24 @@ final class CoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
         XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (⌃⌥ C)")
+    }
+
+    /// The window this closes: while the write-back was deferred by a turn of the main actor,
+    /// there was an interval in which the store held — and had already persisted — a shortcut that
+    /// does not work, and a launch after a kill inside it would have inherited that. Nothing here
+    /// awaits, yields or sleeps: the assertions run on the statement after the assignment.
+    func testTheRevertedShortcutIsStoredAndPersistedBeforeTheAssignmentReturns() throws {
+        coordinator.start()
+        XCTAssertEqual(hotkeyManager.activeShortcut, .captureDefault)
+        let doomed = try preset("F14")
+        block(doomed)
+
+        settings.hotkey = doomed
+
+        XCTAssertEqual(settings.hotkey, .captureDefault)
+        // What the next launch reads, through the production decode path, with no turn of the
+        // loop having elapsed since the assignment.
+        XCTAssertEqual(shortcutAsPersisted(), .captureDefault)
     }
 
     /// The fresh-launch case: nothing is live to revert to, so the user's own choice stays put

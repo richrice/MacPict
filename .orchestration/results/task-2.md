@@ -706,3 +706,133 @@ Files changed in this follow-up: `MacPict/GlobalHotkeyManager.swift` and
 needed no change. Nothing outside my ownership was touched, and no caller outside it broke —
 `AppCoordinator.swift` (Task 7), `SettingsView.swift` (Task 8) and `AnnotationCanvasView.swift`
 (Task 5) all compiled in this run at the state they held at `2026-07-26 00:13`.
+
+---
+
+# Follow-up — didSet publisher for settled hotkey changes
+
+`@Published` publishes from `willSet`, so a subscriber that writes a corrected value back does so
+while the store's own assignment is still on the stack, and the outer assignment then overwrites it.
+`SettingsStore` now offers a second channel that fires only once the value has settled.
+
+## Declaration
+
+`/Users/rich/Repos/MacPict/MacPict/SettingsStore.swift` (`import Combine` added):
+
+```swift
+/// Fires after `hotkey` has been stored and persisted, unlike `$hotkey`, which publishes from
+/// `willSet`. A subscriber that writes a corrected value back must use this one, or its write
+/// is flattened by the assignment still in flight.
+let hotkeyDidChange = PassthroughSubject<HotkeyShortcut, Never>()
+
+@Published var hotkey: HotkeyShortcut {
+    didSet {
+        persistHotkey()
+        hotkeyDidChange.send(hotkey)
+    }
+}
+```
+
+`@Published` is retained exactly as it was — Task 8's `Picker` binds through `$settings.hotkey` and
+SwiftUI wants the `willSet` timing for invalidation. The two channels answer different questions,
+the same split as `status` versus `activeShortcut` on the manager.
+
+## `didSet` on a `@Published` property — confirmed, not assumed
+
+It fires. Confirmed empirically rather than from memory: all three new tests assert on values
+delivered through `hotkeyDidChange`, which is sent from nowhere but that `didSet`, and they pass
+against Swift 6.3.3 / Xcode 26.6. The mutation run below sharpens the confirmation — moving the
+`send` into `willSet` changes the observed values in exactly the way `willSet`/`didSet` timing
+predicts (`⌃⌥ C` instead of `F14`), so both accessors demonstrably run and in the expected order.
+Nothing had to be routed around.
+
+## Persist-then-send, and the honest version of why
+
+There is exactly **one** place this preference is written: `persistHotkey()`, called only from this
+`didSet`. It was already the sole site before this change — nothing needed consolidating, and
+nothing new was added that could disagree with it.
+
+The pinned order is implemented as specified. The rationale needs one correction, because I tested
+it rather than assuming it:
+
+- **What is true:** a subscriber that fires must be able to trust that `UserDefaults` already holds
+  the new value. With `send` first, a sink that reads the preference back — or builds a second store
+  over the same defaults, as a fresh launch does — sees the *previous* shortcut. That is the
+  ordering bug, and `testHotkeyDidChangeFiresAfterTheNewValueIsPersisted` fails on it.
+- **What is not quite true:** the brief's reasoning that reversing the order would "leave the dead
+  shortcut persisted" after a write-back. `persistHotkey()` encodes `self.hotkey` at call time, not
+  a value captured when the assignment began, so by the time the outer call runs the property
+  already holds the corrected shortcut and it persists *that*. I verified this: under a
+  send-before-persist mutation the write-back test still passes and only the persistence-ordering
+  test fails.
+
+So the order stays as pinned, for the first reason. I am flagging the second because a future reader
+who trusts the stated rationale would conclude the write-back test guards the ordering, and it does
+not — `testHotkeyDidChangeFiresAfterTheNewValueIsPersisted` is the test that does.
+
+## New tests
+
+In `/Users/rich/Repos/MacPict/MacPictTests/SettingsStoreTests.swift`, all on the suite-named
+`UserDefaults` (`.standard` is still never touched):
+
+| Test | Guards |
+|---|---|
+| `testHotkeyDidChangeFiresAfterTheNewValueIsReadable` | inside the sink, `store.hotkey` already equals the new value — the property `$hotkey` does not have, so switching a subscriber back to `$hotkey` breaks this |
+| `testHotkeyDidChangeFiresAfterTheNewValueIsPersisted` | inside the sink, a *second* store over the same defaults reads the new shortcut — proves persist-then-send |
+| `testASynchronousWriteBackInsideTheSinkSurvives` | assign A, assign B once from inside the sink; afterwards `store.hotkey == B` **and** a second store reads B — the coordinator's exact scenario |
+
+The first two also assert the subject fired at all, so a subject that never sends fails rather than
+passing vacuously. The write-back test guards its sink with a `hasWrittenBack` flag, mirroring the
+coordinator's own re-entrancy guard.
+
+## Mutation check — both mutations caught
+
+**1. `send` moved to `willSet`** (the closest compiling equivalent of "plain `@Published`, no
+`didSet` channel" — it gives subscribers precisely the `$hotkey` timing):
+
+```
+Executed 157 tests, with … failures — exit 65
+testASynchronousWriteBackInsideTheSinkSurvives  FAILED  store.hotkey was F16 (rejected), not F17
+                                                        and F16 was what stayed persisted
+testHotkeyDidChangeFiresAfterTheNewValueIsPersisted  FAILED  sink read ⌃⌥ C, not F15
+testHotkeyDidChangeFiresAfterTheNewValueIsReadable   FAILED  store.hotkey was ⌃⌥ C, not F14
+```
+
+All three fail, and the write-back failure reproduces the defect verbatim: the dead shortcut wins
+and is persisted.
+
+**2. `send` before `persist`** (ordering only): `testHotkeyDidChangeFiresAfterTheNewValueIsPersisted`
+fails — sink read `⌃⌥ C` instead of `F15` — exit 65. The other two pass, for the reason set out
+above.
+
+Both mutations were reverted; the file as committed is the persist-then-send form shown at the top.
+
+## Validation
+
+Run from `/Users/rich/Repos/MacPict`:
+
+| Command | Exit code |
+|---|---|
+| `./scripts/bootstrap.sh` | **0** |
+| `./scripts/build.sh` | **0** |
+| `./scripts/test.sh` | **0** |
+
+**`Executed 157 tests, with 0 failures (0 unexpected) in 6.343 seconds`** — the 153 existing plus my
+3, plus 1 more that landed from another worker during the run. `Test Suite 'SettingsStoreTests'
+passed` (9 tests), `Test Suite 'HotkeyShortcutTests' passed` (10 tests). Zero `error:` lines; zero
+Swift compiler warnings in both logs — the only `warning:` remains the toolchain's
+`appintentsmetadataprocessor … No AppIntents.framework dependency found.`
+
+**Transient failures seen and not acted on, as instructed.** Two intermediate runs while Task 7 was
+mid-switch failed in `MacPictTests/CoordinatorTests.swift` only — 10 failures at `00:43`
+(`testChangingTheStoredShortcutReRegistersWithTheNewOne`,
+`testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive`,
+`testTheRevertedShortcutIsStoredAndPersistedBeforeTheAssignmentReturns`), down to 4 at `00:44`, and
+0 at `00:45` once their source and tests were consistent. My own suites passed in every one of those
+runs. I did not touch `AppCoordinator.swift` or `CoordinatorTests.swift`. Reading their file
+read-only afterwards, Task 7 now subscribes to `hotkeyDidChange` with the main-actor hop gone, which
+is what this change was for.
+
+Files changed in this follow-up: `MacPict/SettingsStore.swift` and
+`MacPictTests/SettingsStoreTests.swift`. `GlobalHotkeyManager.swift` was not touched —
+`activeShortcut` and the revert policy are unchanged, as instructed.

@@ -107,11 +107,14 @@ final class AppCoordinator: NSObject {
         // trigger and the menu says why the shortcut is not responding.
         apply(settings.hotkey)
 
-        // dropFirst: `apply` above has already registered the current value. removeDuplicates:
-        // re-selecting the shortcut that is already in force must not tear down a working
-        // registration and re-make it.
-        hotkeyCancellable = settings.$hotkey
-            .dropFirst()
+        // `hotkeyDidChange`, not `$hotkey`: it fires from `didSet`, once the store has settled and
+        // persisted, which is what lets `revertStoredShortcut` write a correction that sticks.
+        //
+        // No `dropFirst()`. A `PassthroughSubject` does not replay to a new subscriber, so there
+        // is no initial value to skip and the operator would eat the user's first real change.
+        // `removeDuplicates()` stays: re-selecting the shortcut already in force must not tear
+        // down a working registration and re-make it.
+        hotkeyCancellable = settings.hotkeyDidChange
             .removeDuplicates()
             .sink { [weak self] shortcut in
                 MainActor.assumeIsolated {
@@ -185,29 +188,25 @@ final class AppCoordinator: NSObject {
         revertStoredShortcut(to: live)
     }
 
-    /// Two hazards, both of them invisible at the call site.
+    /// Synchronous, and it has to be: the assignment below runs while the store's outer `didSet`
+    /// is still on the stack, so the corrected shortcut is stored and persisted by its own nested
+    /// `didSet` before that outer call returns. There is no turn of the loop during which the
+    /// store holds — or has persisted — a shortcut that does not work, which is exactly what a
+    /// later launch would otherwise inherit.
     ///
-    /// **The write has to wait a turn.** `@Published` publishes from `willSet`, so when this runs
-    /// from the `$hotkey` sink it is running *inside* the store's own assignment: a write here
-    /// would be flattened the instant that assignment completed, and `SettingsStore.didSet` would
-    /// go on to persist the dead shortcut. The write-back is therefore hopped onto the next turn
-    /// of the main actor, by which time the store has settled and this is an ordinary assignment.
-    ///
-    /// **The write re-enters.** That assignment publishes in turn, and `removeDuplicates()` cannot
-    /// absorb it — the reverted shortcut genuinely differs from the one that just failed — so the
-    /// sink would register it all over again. `isRevertingStoredShortcut` is what stops that; it
-    /// is set here and nowhere else, and it brackets exactly the one assignment, which is
-    /// synchronous with the sink it has to suppress.
+    /// **The write re-enters.** That nested `didSet` sends on `hotkeyDidChange` in turn, and
+    /// `removeDuplicates()` cannot absorb it — the reverted shortcut genuinely differs from the
+    /// one that just failed — so the sink would register it all over again.
+    /// `isRevertingStoredShortcut` is what stops that. It is set here and nowhere else, and it
+    /// brackets exactly the one assignment whose nested delivery it has to suppress; the subject
+    /// delivers that nested send synchronously, so the flag is true for precisely that callback.
     private func revertStoredShortcut(to shortcut: HotkeyShortcut) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.isRevertingStoredShortcut = true
-            defer { self.isRevertingStoredShortcut = false }
-            self.settings.hotkey = shortcut
-            AppLogger.hotkey.info(
-                "Stored selection reverted to \(shortcut.displayString, privacy: .public), the shortcut still registered"
-            )
-        }
+        isRevertingStoredShortcut = true
+        defer { isRevertingStoredShortcut = false }
+        settings.hotkey = shortcut
+        AppLogger.hotkey.info(
+            "Stored selection reverted to \(shortcut.displayString, privacy: .public), the shortcut still registered"
+        )
     }
 
     /// The single capture entry point, shared by the global hotkey and the menu item.
