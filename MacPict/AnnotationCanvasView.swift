@@ -91,6 +91,36 @@ final class AnnotationCanvasView: NSView {
         CanvasGeometry(imageSize: document.imageSize, sourceRect: document.cropRect, viewSize: bounds.size)
     }
 
+    /// The pointer is the only thing telling the user which tool is armed while they are
+    /// looking at the screenshot rather than the toolbar — and a capture now lands in crop
+    /// mode, where an unannounced first drag would crop instead of draw.
+    ///
+    /// System cursors throughout, on evidence: SF-Symbol-badged crosshairs were rendered at
+    /// real device pixels over white, black, grey and blue, and the badges turned to mush —
+    /// crop unreadable, box and ellipse alike, line and arrow indistinguishable — while
+    /// `NSCursor.crosshair` stayed crisp on every background. Crosshair is also what macOS's
+    /// own ⌘⇧4 uses for exactly this gesture.
+    static func cursor(for tool: AnnotationTool) -> NSCursor {
+        switch tool {
+        case .text: .iBeam
+        case .crop, .arrow, .box, .ellipse, .line: .crosshair
+        }
+    }
+
+    /// Whether a tool change should force the cursor immediately rather than waiting for the
+    /// cursor rects to be re-evaluated. Pure so it can be tested; the AppKit plumbing around
+    /// it cannot be exercised headlessly.
+    static func shouldApplyCursorImmediately(pointerInView: CGPoint?, bounds: CGRect, isEditingText: Bool) -> Bool {
+        // While an editor is up it owns the pointer's appearance; forcing ours would fight it.
+        guard !isEditingText, let pointerInView else { return false }
+        return bounds.contains(pointerInView)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: Self.cursor(for: document.tool))
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current else { return }
         NSColor.black.setFill()
@@ -321,6 +351,22 @@ final class AnnotationCanvasView: NSView {
             toolBeforeCrop = lastTool
         }
         lastTool = tool
+        refreshCursor(for: tool)
+    }
+
+    /// Invalidating the rects alone only takes effect the next time the pointer moves, so a
+    /// tool picked with `1`…`6` or from the toolbar while the pointer already sits over the
+    /// canvas would keep the previous cursor until the user jiggled the mouse. Setting it
+    /// directly covers that case; the rect keeps it right on re-entry.
+    private func refreshCursor(for tool: AnnotationTool) {
+        window?.invalidateCursorRects(for: self)
+        let pointer = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+        guard Self.shouldApplyCursorImmediately(
+            pointerInView: pointer,
+            bounds: bounds,
+            isEditingText: textEditing != nil
+        ) else { return }
+        Self.cursor(for: tool).set()
     }
 
     private func beginTextEditing(at imagePoint: CGPoint, geometry: CanvasGeometry) {

@@ -632,3 +632,103 @@ the restored file was re-grepped for `x: editing.field.frame.minX + editing.text
   final word is the user looking at a real edit.
 - `textInset(of:)` returns 0 if `field.cell` is ever nil. `NSTextField` always has one; the
   guard exists only because the API is optional.
+
+---
+
+## Feature — per-tool mouse cursors
+
+### Mapping
+
+| Tool | Cursor |
+|---|---|
+| `crop` | `NSCursor.crosshair` |
+| `arrow`, `box`, `ellipse`, `line` | `NSCursor.crosshair` |
+| `text` | `NSCursor.iBeam` |
+
+Exposed as `static func cursor(for tool: AnnotationTool) -> NSCursor` on `AnnotationCanvasView`
+so the mapping is directly assertable, and applied through
+`resetCursorRects()` → `addCursorRect(bounds, cursor:)`.
+
+### Custom cursors: built, rendered, rejected on the evidence
+
+I did build the badged candidates before deciding — a white-outlined crosshair with each tool's
+`AnnotationTool.symbolName` as a bottom-right badge (white dilation under a black glyph, hot spot
+at the crosshair centre) — and rendered a contact sheet of all six over white, black, 50 % grey and
+saturated blue, with the system crosshair in the last column for comparison. Written to
+`cursor-evidence-2x.png` in the session scratchpad.
+
+At 3× magnification the badges look fine, which is exactly the trap. Rendered at **true device
+pixels** (2×, the density a Retina screen actually draws a cursor at) they are mush: the crop badge
+is an unreadable smudge, `box` and `ellipse` collapse into the same small rounded blob, and `line`
+and `arrow` are indistinguishable strokes. The badge also crowds the crosshair's lower-right arm,
+and my hand-drawn crosshair reads thinner and weaker than the system one on grey. The system
+crosshair stayed crisp and unmistakable on all four backgrounds.
+
+So: plain `NSCursor.crosshair` for the shape tools, exactly as your fallback instruction allowed.
+The toolbar already shows which shape is armed with a highlighted button; the cursor's job here is
+the mode distinction (drawing vs. typing vs. selecting a region), and it does that. Crosshair is
+also what macOS's own ⌘⇧4 uses for this gesture, so it is the convention as well as the legible
+choice.
+
+### Tool changed while the pointer is already inside
+
+`invalidateCursorRects(for:)` alone only takes effect the next time the pointer moves, so picking
+a tool with `1`…`6` or from the toolbar while the pointer sits over the canvas would leave the old
+cursor until the user jiggled the mouse. `trackTool(_:)` — already driven by the `document.$tool`
+sink, so it covers keyboard *and* toolbar changes — now calls `refreshCursor(for:)`, which
+invalidates the rects and then, if the pointer is inside, calls `.set()` directly.
+
+The decision that gates the direct set is factored out as a pure function,
+`shouldApplyCursorImmediately(pointerInView:bounds:isEditingText:)`, following this codebase's
+`DisplayLocator.indexOfScreen(containing:frames:)` precedent, and is unit-tested. **The AppKit half
+is not verifiable headlessly**: `mouseLocationOutsideOfEventStream` reports wherever the machine's
+physical pointer happens to be, so a test asserting on it would be non-deterministic, and I was
+asked not to launch the app — so I have **not** manually confirmed the on-screen behaviour. What is
+proven is the mapping, the gating decision, and that the tool change is observed at all. The
+remaining risk is confined to whether `.set()` sticks, which is a two-line path.
+
+### Text editor and toolbar
+
+The `isEditingText` guard means a live inline editor is never fought over — the field manages its
+own cursor. The canvas's tool cursor is the I-beam in that mode anyway, so the two agree rather
+than compete. The toolbar is a separate `NSHostingView` and gets no cursor rect from me; it keeps
+the ordinary arrow. `testKeyboardToolChangeLeavesTheCanvasCursorRectMatchingTheNewTool` asserts the
+canvas frame does not intersect the toolbar frame, so the rect I add cannot reach it.
+
+### ⌘-held crop cursor: deliberately skipped
+
+Not worth it, and the mapping is why: crosshair now covers crop *and* all four shape tools, so a
+⌘-held indicator would change nothing for five of the six tools. The only case it would alter is
+⌘ held with the text tool armed — I-beam becoming crosshair. Paying for that with a
+`flagsChanged`-driven modifier state machine, which only receives events while the canvas is first
+responder and would flicker on every incidental ⌘ press (⌘Z, ⌘↩), is a bad trade for one tool. If
+the user asks for it later, the honest implementation is `flagsChanged(with:)` plus a
+`isCommandHeld` flag feeding the same `refreshCursor` path.
+
+### Tests (4 new, suite now 22)
+
+- `testNoToolShowsThePlainArrowCursor` — the user's literal complaint, over every tool.
+- `testCropAndShapeToolsUseTheCrosshairAndTextUsesTheIBeam` — the exact mapping.
+- `testCursorIsForcedOnlyWhenThePointerIsInsideAndNoEditorIsUp` — inside, outside, no window, and
+  editing-in-progress.
+- `testKeyboardToolChangeLeavesTheCanvasCursorRectMatchingTheNewTool` — `5` then `6` through the
+  real key path, `resetCursorRects()` exercised, plus the toolbar-untouched assertion.
+
+**Mutation check** (you flagged two vacuous tests in this file previously, so I ran it): with
+`cursor(for:)` forced to return `.arrow` for every tool and `shouldApplyCursorImmediately` forced
+to `true`, `** TEST FAILED **` — **all four** new tests failed, on the specific assertions
+(`"crop still shows the default arrow"`, the crosshair/iBeam identities, and all three negative
+cases of the gating predicate). None of them passes regardless of the fix. Restored from a
+scratchpad backup in the same command and re-grepped.
+
+Everything preserved: the `isClosed` latch, the single `deliver(_:)` path, crop auto-revert, the
+text-position parity fix, and `fitEditor` tracking geometry changes. `AnnotationModel.swift` was
+not touched and `toolBeforeCrop` was not adjusted.
+
+### Validation (real exit codes, after restore)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **161 tests, 0 failures** (157 + 4) |

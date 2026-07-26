@@ -572,3 +572,55 @@ This cannot originate from Repair 2: `crop(to:)` is never called by the exporter
 symbol `SnapshotExporter` shares with me — `pixelAlignedRect` — was not modified. Per the
 constraints I have reported it and touched nothing in Task 4's files. Once Task 4's edit lands,
 the target should return to fully green; my two suites need no further change.
+
+---
+
+# Change — crop is the initial tool
+
+## Production change (one line)
+
+`MacPict/AnnotationModel.swift`, `AnnotationDocument`:
+
+```swift
+    // Crop first: the capture is tightened to what matters, then annotated.
+    @Published var tool: AnnotationTool = .crop
+```
+
+Previously `= .arrow`. Nothing else was touched: `cropRect`, the undo model,
+`canonicalCropRect`, `pixelAlignedRect`, `CanvasGeometry` and the `keyEquivalent` mapping are
+all unchanged. `1`…`5` remain arrow/box/ellipse/line/text and crop remains `6`.
+
+## Tests updated: exactly one
+
+- `testDocumentStartsEmptyWithImagePixelSize` — `XCTAssertEqual(document.tool, .arrow)` became
+  `XCTAssertEqual(document.tool, .crop)`. **Direct consequence** of the contract change. The
+  assertion was inverted, not deleted, so the initial tool stays pinned by a test.
+
+## No latent assumptions surfaced, and here is why
+
+I searched both of my test files for every reference to `tool` and to `.arrow`. There is
+exactly one other hit, in `testToolKeyEquivalentsMatchCaseIterableOrder`
+(`XCTAssertEqual(AnnotationTool.allCases, [.arrow, .box, .ellipse, .line, .text, .crop])`),
+which asserts declaration order rather than document state and is unaffected.
+
+Nothing else in `AnnotationModelTests` reads or writes `document.tool` at all. That is
+structural rather than lucky: `AnnotationDocument` never consults `tool` — it is pure UI state
+that Task 5's canvas reads to decide what to draw — so `append`, `undo`, `redo`, `clear`,
+`crop`, `resetCrop` and `cycleSize` cannot behave differently under a different default. The
+tests build `Annotation` values directly and hand them to `append`, so no test path was
+implicitly routed through arrow mode. `CanvasGeometryTests` does not reference
+`AnnotationDocument` at all.
+
+So the honest answer to the interesting question is: this change exposed **zero** hidden
+assumptions in the files I own. The one edited assertion is the whole of it.
+
+## Validation (real exit codes)
+
+| Command | Exit | Notes |
+|---|---|---|
+| `./scripts/bootstrap.sh` | 0 | |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **`, zero Swift `warning:`/`error:` lines |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **157 tests, 0 failures**, whole target. `AnnotationModelTests` 35 passed, `CanvasGeometryTests` 17 passed. The only `warning:` in the log is xcodebuild's `appintentsmetadataprocessor … No AppIntents.framework dependency found`. |
+
+No failures anywhere, including Task 5's concurrently edited `AnnotationCanvasView.swift` work;
+nothing outside my four files was touched.

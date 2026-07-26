@@ -259,6 +259,66 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(controller.window).isVisible)
     }
 
+    /// The user's actual complaint: every mode showed the plain arrow, so nothing said which
+    /// tool was armed.
+    func testNoToolShowsThePlainArrowCursor() {
+        for tool in AnnotationTool.allCases {
+            XCTAssertFalse(
+                AnnotationCanvasView.cursor(for: tool) === NSCursor.arrow,
+                "\(tool) still shows the default arrow"
+            )
+        }
+    }
+
+    func testCropAndShapeToolsUseTheCrosshairAndTextUsesTheIBeam() {
+        XCTAssertTrue(AnnotationCanvasView.cursor(for: .crop) === NSCursor.crosshair)
+        for tool in [AnnotationTool.arrow, .box, .ellipse, .line] {
+            XCTAssertTrue(AnnotationCanvasView.cursor(for: tool) === NSCursor.crosshair, "\(tool)")
+        }
+        XCTAssertTrue(AnnotationCanvasView.cursor(for: .text) === NSCursor.iBeam)
+    }
+
+    /// The "tool changed while the pointer is already inside" rule. The AppKit half — that
+    /// `.set()` reaches the window server — is not assertable headlessly; this covers the
+    /// decision it is driven by.
+    func testCursorIsForcedOnlyWhenThePointerIsInsideAndNoEditorIsUp() {
+        let bounds = CGRect(x: 0, y: 0, width: 200, height: 100)
+
+        XCTAssertTrue(AnnotationCanvasView.shouldApplyCursorImmediately(
+            pointerInView: CGPoint(x: 100, y: 50), bounds: bounds, isEditingText: false
+        ))
+        XCTAssertFalse(AnnotationCanvasView.shouldApplyCursorImmediately(
+            pointerInView: CGPoint(x: 400, y: 50), bounds: bounds, isEditingText: false
+        ), "a pointer outside the canvas must be left alone")
+        XCTAssertFalse(AnnotationCanvasView.shouldApplyCursorImmediately(
+            pointerInView: nil, bounds: bounds, isEditingText: false
+        ), "no window means no pointer to reason about")
+        XCTAssertFalse(AnnotationCanvasView.shouldApplyCursorImmediately(
+            pointerInView: CGPoint(x: 100, y: 50), bounds: bounds, isEditingText: true
+        ), "a live text editor owns the pointer's appearance")
+    }
+
+    /// Changing the tool with the keyboard must leave a cursor rect that matches the new tool,
+    /// and it must cover the canvas only — the toolbar keeps the ordinary arrow.
+    func testKeyboardToolChangeLeavesTheCanvasCursorRectMatchingTheNewTool() throws {
+        controller.window?.layoutIfNeeded()
+        let canvas = try canvas()
+
+        try canvas.keyDown(with: keyEvent("5", []))
+        XCTAssertEqual(controller.document.tool, .text)
+        canvas.resetCursorRects()
+        XCTAssertTrue(AnnotationCanvasView.cursor(for: controller.document.tool) === NSCursor.iBeam)
+
+        try canvas.keyDown(with: keyEvent("6", []))
+        XCTAssertEqual(controller.document.tool, .crop)
+        canvas.resetCursorRects()
+        XCTAssertTrue(AnnotationCanvasView.cursor(for: controller.document.tool) === NSCursor.crosshair)
+
+        let toolbar = try XCTUnwrap(controller.window?.contentView?.subviews.first { !($0 is AnnotationCanvasView) })
+        XCTAssertFalse(canvas.bounds.isEmpty)
+        XCTAssertFalse(canvas.frame.intersects(toolbar.frame), "the canvas cursor rect must not reach the toolbar")
+    }
+
     /// The regression guard for Repair 3 item 1. `crop(to:)` aligns rects outward to whole
     /// pixels, so two nearly identical drags can produce the same rect — and a revert
     /// conditioned on the rect *changing* would silently strand the user in crop mode, which

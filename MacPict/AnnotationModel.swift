@@ -139,7 +139,8 @@ final class AnnotationDocument: ObservableObject {
     @Published private(set) var annotations: [Annotation] = []
     /// Visible sub-rect of `image`, in full-image pixels, top-left origin.
     @Published private(set) var cropRect: CGRect
-    @Published var tool: AnnotationTool = .arrow
+    // Crop first: the capture is tightened to what matters, then annotated.
+    @Published var tool: AnnotationTool = .crop
     @Published var style: AnnotationStyle = .default
 
     // Snapshot undo: each entry carries the whole annotation array *and* the crop rect, so a

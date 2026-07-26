@@ -40,7 +40,8 @@ final class AnnotationModelTests: XCTestCase {
         XCTAssertTrue(document.isEmpty)
         XCTAssertFalse(document.canUndo)
         XCTAssertFalse(document.canRedo)
-        XCTAssertEqual(document.tool, .arrow)
+        // Crop is the initial tool: tighten the capture first, then annotate.
+        XCTAssertEqual(document.tool, .crop)
         XCTAssertEqual(document.style, .default)
     }
 
