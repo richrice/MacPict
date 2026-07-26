@@ -945,3 +945,115 @@ three went green on their own.
 
 Everything preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text
 position/size parity, `fitEditor` tracking geometry, per-tool cursors, and the letterbox hairlines.
+
+---
+
+## Feature — multi-line and wrapping text
+
+### The view: a bare `NSTextView`, no scroll view
+
+The editor is a live preview of the committed annotation, and a preview that can scroll is one
+that can show text at a position the export will not — so it is sized to its content instead and
+never scrolls. It is added directly as a subview. It also drives the same TextKit 1
+storage/layout-manager/container objects `AnnotationRenderer` lays out with, so line breaking is
+the same code rather than a second implementation to keep in step.
+
+Configured with `isRichText = false`, `importsGraphics = false`, `allowsUndo = false` (⌘Z belongs
+to the document and the canvas takes it first; a second undo stack could only disagree),
+`textContainerInset = .zero`, `lineFragmentPadding = 0`, `.byWordWrapping`,
+`widthTracksTextView = true`.
+
+Keys, via `textView(_:doCommandBy:)`: `insertNewline:` commits (the fast path is untouched),
+`insertLineBreak:` inserts a line break, `cancelOperation:` cancels without closing the window.
+⇧↩ inserts a plain `"\n"` rather than letting AppKit insert its U+2028 line separator — both lay
+out identically, but U+2028 is a surprise to anything that later reads the string.
+
+### Measured inset: (0, 0), and the old constant does not carry over
+
+The `NSTextField` inset was `cellSize.width / 2` — 2 pt horizontal, 0 vertical. `NSTextView` does
+not have it: text is positioned by `textContainerOrigin` plus the container's
+`lineFragmentPadding`. Measured with both zeroed, `textContainerOrigin` is **(0, 0)** and the
+padding is **0**, so the glyph origin is the view's frame origin. It is still read from the view
+at every placement rather than hard-coded, since anything non-zero there shifts every committed
+annotation, and `testEditorLineFragmentPaddingAndInsetAreZero` pins all three values.
+
+### Wrap-width policy, and short text
+
+Measure with `maxWidth: nil` (which already honours typed newlines); if the natural width fits in
+`sourceRect.width`, commit `wrapWidth: nil` and keep the existing shift-to-fit; otherwise commit
+`wrapWidth: sourceRect.width` with the origin at `sourceRect.minX`. The vertical shift then runs in
+both cases, which matters more now that several lines can overflow the bottom where one could not.
+Short text is therefore untouched: no wrap width, no reflow, and it still drifts left to stay whole
+against an edge — `testShortTextNearAnEdgeIsNotWrapped` asserts both the `nil` wrap width and that
+the origin stays where it was typed instead of jumping to the left edge.
+
+### The editor gets the width the renderer *used*, not the width it was allowed
+
+This is the one place I did something the brief did not describe, and it is the difference between
+the feature working and quietly lying.
+
+Handing the editor `wrapWidth × scale` looked obviously right and was wrong. Glyph advances are not
+linear in point size, so at the preview's smaller font a word the renderer rejected still fits.
+Measured on `"far wider than this narrow crop can ever hold"` in a 220 px crop:
+
+| | line 1 | longest line |
+|---|---|---|
+| editor at `wrapWidth × scale` | `far wider than this ` | 215.6 px |
+| renderer at image metrics | `far wider than ` | 199.8 px |
+
+Same line *count*, different breaks — which no line-count assertion would have caught. The editor's
+container is now `textSize(for:style:maxWidth:).width × scale`, the width the renderer's own layout
+actually occupied. That closes the gap in both directions: every line the renderer kept fits,
+because no line is wider than the longest one; and every word it rejected still overflows, because
+the used width is stricter than the wrap width it was rejected against. After the change the breaks
+agree exactly (`far wider than / this narrow crop / can ever hold`).
+
+The **committed** `wrapWidth` remains `sourceRect.width`, not the used width — the renderer
+re-derives its layout from it, and the used width is a *consequence* of that layout, not an input
+to it. Committing the used width would re-wrap the text one notch tighter on every render.
+
+A ~3 % residual remains between the editor's block width and the export's: the same characters are
+genuinely ~3 % narrower at the preview font than at image metrics. That is inherent to the renderer
+drawing each line at the scaled font, it is what keeps the *committed* annotation aligned with the
+editor on screen, and the export is the only place image metrics are used. The wrap test's tolerance
+sits between that 3 % and the ≥8 % a moved word produces.
+
+### New tests
+
+- `testShiftReturnStartsASecondLineUnderTheFirst` — the literal request: ⇧↩ then more text; asserts
+  the committed string is `"Hello\nWorld"` and, on the exported pixels, that the second line's ink
+  starts at the same x as the first (bands split from the ink box, not counted, since a descender
+  can form its own band)
+- `testReturnCommitsAndDoesNotInsertANewline` — the fast path
+- `testOverWideStringWrapsAtTheSameBreaksInEditorAndExport` — replaces
+  `testStringWiderThanTheVisibleImageClipsIdenticallyInEditorAndExport`, which asserted the old
+  clipping behaviour this feature deliberately supersedes. The assertion was **replaced, not
+  relaxed**: same failure mode, new contract.
+- `testShortTextNearAnEdgeIsNotWrapped`
+- `testMultiLineTextOverflowingTheBottomShiftsUpAndIsWholeInTheExport`
+- `testEditorLineFragmentPaddingAndInsetAreZero`
+
+### Mutation checks
+
+| Mutation | Result |
+|---|---|
+| **A** — `lineFragmentPadding = 5` restored | `** TEST FAILED **`: the padding pin, the wrap-parity test, and all three editor/render parity tests. Exactly the divergence Task 4 warned about. |
+| **B** — editor laid out with the allowed wrap width instead of the used width | `** TEST FAILED **`, and **only** `testOverWideStringWrapsAtTheSameBreaksInEditorAndExport` — the precise divergence, isolated. |
+| **C** — ⇧↩ left to AppKit's U+2028 | `** TEST FAILED **`, and only `testShiftReturnStartsASecondLineUnderTheFirst`. |
+
+Each applied to a scratchpad-backed copy and restored in the same command.
+
+### Validation (real exit codes, final state)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **183 tests, 0 failures** |
+
+Tasks 3 and 4 had both landed before I started, so the only transient red was my own
+`missing argument for parameter 'wrapWidth'` while migrating to the new `.text` case.
+
+Everything preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text
+position/size parity, `fitEditor` tracking geometry changes, per-tool cursors, the letterbox
+hairlines, and the extent clamping.

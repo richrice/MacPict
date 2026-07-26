@@ -40,7 +40,7 @@ private final class RecordingWindowDelegate: AnnotationWindowDelegate {
     private func record(_ message: Message, _ controller: AnnotationWindowController) {
         messages.append(message)
         textsWhenNotified.append(controller.document.annotations.compactMap { annotation in
-            if case let .text(_, string) = annotation.kind { return string }
+            if case let .text(_, string, _) = annotation.kind { return string }
             return nil
         })
     }
@@ -163,7 +163,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
     /// Types into the inline editor without pressing Return, the way a user does just before
     /// reaching for the mouse.
     @discardableResult
-    private func beginTextEdit(_ string: String) throws -> NSTextField {
+    private func beginTextEdit(_ string: String) throws -> NSTextView {
         controller.window?.layoutIfNeeded()
         let canvas = try canvas()
         XCTAssertFalse(canvas.geometry.displayRect.isEmpty, "canvas needs a real size to place the editor")
@@ -180,15 +180,15 @@ final class AnnotationWindowControllerTests: XCTestCase {
             pressure: 1
         ))
         canvas.mouseDown(with: event)
-        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
-        field.stringValue = string
+        let editor = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextView }.first)
+        editor.string = string
         XCTAssertTrue(committedTexts().isEmpty, "the text must still be uncommitted at this point")
-        return field
+        return editor
     }
 
     private func committedTexts() -> [String] {
         controller.document.annotations.compactMap { annotation in
-            if case let .text(_, string) = annotation.kind { return string }
+            if case let .text(_, string, _) = annotation.kind { return string }
             return nil
         }
     }
@@ -333,12 +333,12 @@ final class AnnotationWindowControllerTests: XCTestCase {
         canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(
             fromCanvas: CGPoint(x: display.maxX, y: display.midY)
         )))
-        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
-        field.stringValue = "edge"
+        let editor = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextView }.first)
+        editor.string = "edge"
         canvas.commitTextEditing()
 
         let kind = try XCTUnwrap(document.annotations.last?.kind)
-        guard case let .text(origin, _) = kind else { return XCTFail("expected text, got \(kind)") }
+        guard case let .text(origin, _, _) = kind else { return XCTFail("expected text, got \(kind)") }
         XCTAssertLessThanOrEqual(origin.x, document.cropRect.maxX, "text origin escaped the crop")
         XCTAssertGreaterThanOrEqual(origin.x, document.cropRect.minX)
     }
@@ -359,7 +359,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
     }
 
     /// Bounds of the annotation-coloured ink in an exported image, in that image's pixels.
-    private func redInkBounds(_ image: CGImage) -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
+    private func redInkBounds(_ image: CGImage, rows: Range<Int>? = nil) -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
         let width = image.width
         let height = image.height
         guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
@@ -376,7 +376,8 @@ final class AnnotationWindowControllerTests: XCTestCase {
             ), let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             var minX = Int.max, maxX = Int.min, minY = Int.max, maxY = Int.min
-            for y in 0..<height {
+            let scanned = rows.map { $0.clamped(to: 0..<height) } ?? 0..<height
+            for y in scanned {
                 for x in 0..<width {
                     let offset = (y * width + x) * 4
                     guard bytes[offset] > 150, bytes[offset + 1] < 90, bytes[offset + 2] < 90 else { continue }
@@ -386,6 +387,19 @@ final class AnnotationWindowControllerTests: XCTestCase {
             }
             return minX <= maxX ? (minX, maxX, minY, maxY) : nil
         }
+    }
+
+    /// Ink bounds within a band of rows, for comparing one rendered line against another.
+    private func exportedInkRows(
+        of document: AnnotationDocument,
+        rows: Range<Int>
+    ) throws -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
+        let exported = try SnapshotExporter.flatten(
+            image: document.image,
+            annotations: document.annotations,
+            cropRect: document.cropRect
+        )
+        return redInkBounds(exported, rows: rows)
     }
 
     private func exportedInk(of document: AnnotationDocument) throws -> (minX: Int, maxX: Int, minY: Int, maxY: Int) {
@@ -675,9 +689,11 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertLessThan(edge.maxY, Int(crop.height) - 1, "the text should come to rest against the edge, not run off it")
     }
 
-    /// Shifting cannot rescue a string wider than the whole visible image, so it clips — but it
-    /// must clip in the same place on screen as in the PNG, or the preview lies again.
-    func testStringWiderThanTheVisibleImageClipsIdenticallyInEditorAndExport() throws {
+    /// Superseded by wrapping. Until this feature an over-wide string clipped at the crop edge,
+    /// and this test asserted exactly that; now it wraps instead, so the property worth pinning
+    /// is that the editor and the export wrap in the *same* places. Same failure mode, new
+    /// behaviour — the assertion was replaced rather than relaxed.
+    func testOverWideStringWrapsAtTheSameBreaksInEditorAndExport() throws {
         try useLargeDocument()
         let document = controller.document
         let crop = CGRect(x: 100, y: 100, width: 220, height: 300)
@@ -687,20 +703,134 @@ final class AnnotationWindowControllerTests: XCTestCase {
 
         try beginTextEdit("far wider than this narrow crop can ever hold", atImagePoint: CGPoint(x: 110, y: 150))
         let editorInk = try redInk(of: canvas)
-        let editorRightEdge = canvas.geometry.imagePoint(fromView: CGPoint(x: editorInk.maxX, y: editorInk.midY)).x
+        let scale = canvas.geometry.imageScale
+        let editorBlock = CGSize(width: editorInk.width * scale, height: editorInk.height * scale)
 
         canvas.commitTextEditing()
-        let ink = try exportedInk(of: document)
-        let exportRightEdge = crop.minX + CGFloat(ink.maxX + 1)
+        guard case let .text(_, _, wrapWidth)? = document.annotations.last?.kind else {
+            return XCTFail("expected a text annotation")
+        }
+        XCTAssertEqual(wrapWidth, crop.width, "an over-wide string should wrap to the visible width")
 
-        XCTAssertEqual(editorRightEdge, exportRightEdge, accuracy: 4, "editor and export cut the string in different places")
-        XCTAssertEqual(ink.maxX, Int(crop.width) - 1, "an over-wide string should run right up to the crop edge")
+        let ink = try exportedInk(of: document)
+        let exportBlock = CGSize(width: CGFloat(ink.maxX - ink.minX), height: CGFloat(ink.maxY - ink.minY))
+
+        // A moved word changes the block width by 8 % or more; laying the same words out at the
+        // preview's smaller font changes it by about 3 %, because glyph advances are not linear
+        // in point size. The tolerance sits between the two, so this fails on a different break
+        // and tolerates the metric difference that is inherent to how the renderer draws.
+        let ratio = editorBlock.width / exportBlock.width
+        XCTAssertEqual(ratio, 1.0, accuracy: 0.05, "editor and export broke lines differently")
+        XCTAssertLessThanOrEqual(exportBlock.width, crop.width, "wrapped text must not exceed the visible width")
+
+        let oneLine = AnnotationRenderer.textSize(for: "x", style: document.style, maxWidth: nil).height
+        XCTAssertGreaterThan(exportBlock.height, oneLine * 2, "the string should have wrapped onto three lines")
+        XCTAssertEqual(
+            CGFloat(ink.maxY - ink.minY),
+            AnnotationRenderer.textSize(for: "far wider than this narrow crop can ever hold", style: document.style, maxWidth: crop.width).height,
+            accuracy: oneLine,
+            "the export wrapped to a different number of lines than the renderer's own layout"
+        )
+    }
+
+    // MARK: - Multi-line text
+
+    /// Literally what the user asked for: a few words, ⇧↩, and more text underneath the start
+    /// of the first line.
+    func testShiftReturnStartsASecondLineUnderTheFirst() throws {
+        try useLargeDocument()
+        let document = controller.document
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        document.crop(to: crop)
+        document.style = AnnotationStyle(color: .red, size: .small)
+        let canvas = try canvas()
+
+        let editor = try beginTextEdit("Hello", atImagePoint: CGPoint(x: 200, y: 200))
+        XCTAssertTrue(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertLineBreak(_:))))
+        editor.insertText("World", replacementRange: editor.selectedRange())
+        canvas.commitTextEditing()
+
+        XCTAssertEqual(committedTexts(), ["Hello\nWorld"])
+        let ink = try exportedInk(of: document)
+        let midpoint = (ink.minY + ink.maxY) / 2
+        let first = try XCTUnwrap(exportedInkRows(of: document, rows: ink.minY..<midpoint))
+        let second = try XCTUnwrap(exportedInkRows(of: document, rows: midpoint..<(ink.maxY + 1)))
+
+        XCTAssertEqual(second.minX, first.minX, accuracy: 2, "the second line must start under the first")
+        XCTAssertGreaterThan(ink.maxY - ink.minY,
+                             Int(AnnotationRenderer.textSize(for: "Hello", style: document.style).height),
+                             "two lines should be taller than one")
+    }
+
+    /// The fast path: Return commits, and must not leave a newline in the string.
+    func testReturnCommitsAndDoesNotInsertANewline() throws {
+        try useLargeDocument()
+        controller.document.crop(to: CGRect(x: 100, y: 100, width: 600, height: 400))
+        let canvas = try canvas()
+
+        let editor = try beginTextEdit("one line", atImagePoint: CGPoint(x: 200, y: 200))
+        XCTAssertTrue(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+
+        XCTAssertEqual(committedTexts(), ["one line"])
+        XCTAssertTrue(canvas.subviews.isEmpty, "Return should have committed and torn the editor down")
+    }
+
+    /// Short text must not start reflowing just because wrapping now exists.
+    func testShortTextNearAnEdgeIsNotWrapped() throws {
+        try useLargeDocument()
+        let document = controller.document
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        document.crop(to: crop)
+        document.style = AnnotationStyle(color: .red, size: .small)
+
+        try beginTextEdit("This can", atImagePoint: CGPoint(x: crop.maxX - 30, y: 200))
+        try canvas().commitTextEditing()
+
+        guard case let .text(origin, _, wrapWidth)? = document.annotations.last?.kind else {
+            return XCTFail("expected a text annotation")
+        }
+        XCTAssertNil(wrapWidth, "text that fits must carry no wrap width")
+        XCTAssertGreaterThan(origin.x, crop.minX, "short text should stay where it was typed, not jump to the left edge")
+    }
+
+    func testMultiLineTextOverflowingTheBottomShiftsUpAndIsWholeInTheExport() throws {
+        let lines = "alpha\nbravo\ncharlie\ndelta"
+        try useLargeDocument()
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+
+        controller.document.crop(to: crop)
+        controller.document.style = AnnotationStyle(color: .red, size: .small)
+        try beginTextEdit(lines, atImagePoint: CGPoint(x: 200, y: 150))
+        try canvas().commitTextEditing()
+        let interior = try exportedInk(of: controller.document)
+
+        try useLargeDocument()
+        controller.document.crop(to: crop)
+        controller.document.style = AnnotationStyle(color: .red, size: .small)
+        try beginTextEdit(lines, atImagePoint: CGPoint(x: 200, y: crop.maxY - 20))
+        try canvas().commitTextEditing()
+        let edge = try exportedInk(of: controller.document)
+
+        XCTAssertEqual(edge.maxY - edge.minY, interior.maxY - interior.minY, accuracy: 2,
+                       "the block was clipped at the bottom instead of shifting up")
+        XCTAssertLessThan(edge.maxY, Int(crop.height) - 1, "the text should come to rest against the edge, not run off it")
+    }
+
+    /// `NSTextView` defaults `lineFragmentPadding` to 5, which would narrow the editor's usable
+    /// width by 10 points and break lines earlier on screen than in the export.
+    func testEditorLineFragmentPaddingAndInsetAreZero() throws {
+        try useLargeDocument()
+        let editor = try beginTextEdit("padding", atImagePoint: CGPoint(x: 200, y: 200))
+
+        XCTAssertEqual(editor.textContainer?.lineFragmentPadding, 0)
+        XCTAssertEqual(editor.textContainerInset, .zero)
+        XCTAssertEqual(editor.textContainerOrigin, .zero, "a non-zero text origin shifts every committed annotation")
     }
 
     // MARK: - Editor / render parity (Repair 4)
 
     /// The bounding box, in view points, of everything the canvas drew in the annotation
-    /// colour — the glyphs, whether they came from the live `NSTextField` or from
+    /// colour — the glyphs, whether they came from the live `NSTextView` or from
     /// `AnnotationRenderer`. `cacheDisplay` includes subviews, so one measurement covers both.
     /// Red (1, 0.2, 0.2) over a 0.3 grey screenshot on black, so "much more red than green"
     /// isolates the text and nothing else.
@@ -738,20 +868,19 @@ final class AnnotationWindowControllerTests: XCTestCase {
     /// Opens the inline editor at a chosen point in *image* pixels, leaving room for the
     /// glyphs inside the visible image so neither render is clipped by `displayRect`.
     @discardableResult
-    private func beginTextEdit(_ string: String, atImagePoint imagePoint: CGPoint) throws -> NSTextField {
+    private func beginTextEdit(_ string: String, atImagePoint imagePoint: CGPoint) throws -> NSTextView {
         controller.window?.layoutIfNeeded()
         let canvas = try canvas()
         XCTAssertFalse(canvas.geometry.displayRect.isEmpty, "canvas needs a real size to place the editor")
         controller.document.tool = .text
         let viewPoint = canvas.geometry.viewPoint(fromImage: imagePoint)
         canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(fromCanvas: viewPoint)))
-        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
-        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView, "the field editor is what the user types into and what draws the preview")
+        let editor = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextView }.first, "the text view is what the user types into and what draws the preview")
         editor.insertText(string, replacementRange: NSRange(location: 0, length: 0))
-        return field
+        return editor
     }
 
-    /// The regression guard for the reported "text moves when I hit Enter". `NSTextField` holds
+    /// The regression guard for the reported "text moves when I hit Enter". The editor holds
     /// its glyphs a couple of points inside the cell; `AnnotationRenderer` puts the layout box's
     /// corner on the annotation origin. The measurement is the assertion: the same glyphs are
     /// photographed off the canvas before and after the commit, and the two boxes have to

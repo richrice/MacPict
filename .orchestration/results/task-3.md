@@ -714,3 +714,71 @@ passed, confirming the guard is specific to the bug. Implementation restored and
 
 162 rather than 161 because this change adds one net new test. No `clampToImage` reference
 remains anywhere in the repository.
+
+---
+
+# Change — text annotations carry a wrap width
+
+## The case as written
+
+`MacPict/AnnotationModel.swift`, `Annotation.Kind`:
+
+```swift
+        /// `wrapWidth` is in image pixels; nil means no wrapping, honouring only explicit
+        /// newlines. It is frozen at commit time and stored rather than derived from the
+        /// current crop, so undoing a crop can never silently reflow committed text.
+        case text(origin: CGPoint, string: String, wrapWidth: CGFloat?)
+```
+
+That is the entire production change. `cropRect`, the undo model, the alignment helpers,
+`clampToSource` and `CanvasGeometry` are all untouched. `wrapWidth` is in image pixels, the
+same space as every other geometry value in the type, so it scales with the rest of the
+annotation and needs no separate conversion.
+
+## Tests: 0 updated, 2 added (`AnnotationModelTests` 35 → 37)
+
+Nothing in my two test files needed a mechanical fix, because **none of them constructed or
+matched `.text`** — the model suite exercises undo, crop and style behaviour with `.box` and
+`.line` values, and `CanvasGeometryTests` never touches `Annotation` at all. The `.text`
+construction sites were `AnnotationCanvasView.swift`, `AnnotationRenderer.swift`,
+`AnnotationRendererTests.swift` and `AnnotationWindowControllerTests.swift`, all owned by
+Tasks 4 and 5.
+
+Added:
+
+- `testTextAnnotationEqualityDistinguishesWrapWidth` — same width compares equal; **different**
+  widths do not; `nil` versus a numeric width differs in both directions; `nil` versus `nil`
+  compares equal. This is the assertion that stops undo/redo silently collapsing two different
+  layouts into one.
+- `testWrapWidthSurvivesUndoAndRedo` — a wrapped (120) and an unwrapped (`nil`) text annotation
+  appended, undone to empty, redone, then destructured to confirm the widths came back as `120`
+  and `nil` respectively. The snapshot undo stack copies whole `Annotation` values, so this
+  passes structurally, but it pins the property against any future stack change.
+
+## Did anything break non-mechanically?
+
+**No — and this time there was nothing mechanical either.** Zero tests of mine broke, for the
+reason given above: my suites never constructed a `.text` annotation, so the signature change
+was invisible to them. The interesting category is empty for this change. (For contrast, the
+crop-default change had exactly one mechanical update and no hidden assumptions; this one has
+neither.)
+
+## Validation (real exit codes)
+
+| Command | Exit | Notes |
+|---|---|---|
+| `./scripts/build.sh` (immediately after my edit) | 65 | `AnnotationCanvasView.swift:531:78: error: missing argument for parameter 'wrapWidth' in call` — the expected transient break in Task 5's file. Task 4's renderer had already landed `case let .text(origin, string, wrapWidth)`. Reported, not touched. |
+| `./scripts/build.sh` (while polling) | 65 | Task 5's own in-flight errors, unrelated to me: `NSTextContainer has no member 'widthTracksTextContainer'`, `cannot assign value of type 'AnnotationCanvasView' to type '(any NSTextViewDelegate)?'`. Polled until clean. |
+| `./scripts/bootstrap.sh` | 0 | |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **`, zero Swift `warning:`/`error:` lines |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **184 tests, 0 failures**, whole target green |
+
+A later re-run (Tasks 4 and 5 still editing) exited 65 with 10 failures, **all** in
+`AnnotationRendererTests.swift`, `SnapshotExporterTests.swift` and
+`AnnotationWindowControllerTests.swift` — their in-flight wrap tests
+(`testAnnotationWrapWidthReachesTheRendererThroughDraw`,
+`testExportedPNGBreaksLinesLikeADirectDrawTextCall`,
+`testOverWideStringWrapsAtTheSameBreaksInEditorAndExport`). Reported, not touched.
+
+`AnnotationModelTests` 37 passed and `CanvasGeometryTests` 18 passed in **every** run,
+including the ones that were red elsewhere.

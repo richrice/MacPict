@@ -41,13 +41,16 @@ final class AnnotationCanvasView: NSView {
     }
 
     private struct TextEditing {
-        let field: NSTextField
-        /// Top-left of the *field* in image pixels, captured when editing began. The glyphs sit
-        /// `textInset` view points to its right, so this is not the committed annotation origin.
+        /// A bare `NSTextView`, not one inside an `NSScrollView`: the editor is a live preview
+        /// of the committed annotation, and a preview that can scroll is one that can show text
+        /// at a position the export will not. It is sized to its content instead, and it drives
+        /// the same TextKit 1 objects `AnnotationRenderer` lays out with, so line breaks agree
+        /// by construction rather than by a second implementation that has to be kept in step.
+        let textView: NSTextView
+        /// Top-left of the *view* in image pixels, captured when editing began. The glyphs sit
+        /// `textOrigin` view points inside it, so this is not the committed annotation origin.
         let origin: CGPoint
         let style: AnnotationStyle
-        /// View points between the field's leading edge and its first glyph.
-        let textInset: CGFloat
     }
 
     private var drag: Drag?
@@ -417,26 +420,34 @@ final class AnnotationCanvasView: NSView {
 
     private func beginTextEditing(at imagePoint: CGPoint, geometry: CanvasGeometry) {
         let style = document.style
-        let field = NSTextField(frame: .zero)
-        field.font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
-        field.textColor = style.color.nsColor
-        field.isBordered = false
-        field.drawsBackground = false
-        field.backgroundColor = .clear
-        field.focusRingType = .none
-        field.usesSingleLineMode = true
-        field.lineBreakMode = .byClipping
-        field.delegate = self
+        let textView = NSTextView(frame: .zero)
+        textView.font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
+        textView.textColor = style.color.nsColor
+        textView.insertionPointColor = style.color.nsColor
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.isRichText = false
+        textView.importsGraphics = false
+        // ⌘Z belongs to the document, and the canvas takes it before the view ever sees it;
+        // leaving a second undo stack armed here would only be a way for them to disagree.
+        textView.allowsUndo = false
+        textView.isVerticallyResizable = false
+        textView.isHorizontallyResizable = false
+        textView.textContainerInset = .zero
+        // `NSTextView` defaults this to 5, which would narrow the usable width by 10 points and
+        // break lines earlier on screen than in the export. `AnnotationRenderer` zeroes it on
+        // its own container for the same reason; the two have to match exactly.
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.lineBreakMode = .byWordWrapping
+        textView.textContainer?.maximumNumberOfLines = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.heightTracksTextView = false
+        textView.delegate = self
 
-        let editing = TextEditing(
-            field: field,
-            origin: imagePoint,
-            style: style,
-            textInset: Self.textInset(of: field)
-        )
-        addSubview(field)
+        let editing = TextEditing(textView: textView, origin: imagePoint, style: style)
+        addSubview(textView)
         fitEditor(editing)
-        window?.makeFirstResponder(field)
+        window?.makeFirstResponder(textView)
         textEditing = editing
     }
 
@@ -449,27 +460,48 @@ final class AnnotationCanvasView: NSView {
     /// second way here would be a second thing that can disagree with what is drawn, which is
     /// this whole family of bugs.
     private func glyphOrigin(for string: String, editing: TextEditing, geometry: CanvasGeometry) -> CGPoint {
+        placement(for: string, editing: editing, geometry: geometry).origin
+    }
+
+    /// Where the text goes and how wide it may run, in image pixels — the single decision the
+    /// live editor and the commit both take, so the PNG cannot break lines anywhere other than
+    /// the screen did.
+    ///
+    /// Wrapping is applied only when the text cannot fit as typed. Short annotations therefore
+    /// behave exactly as they did before this existed: no wrap width, and the same
+    /// shift-to-fit that keeps them whole against an edge.
+    private func placement(
+        for string: String,
+        editing: TextEditing,
+        geometry: CanvasGeometry
+    ) -> (origin: CGPoint, wrapWidth: CGFloat?) {
+        let inset = Self.textOrigin(of: editing.textView)
         let anchor = CGPoint(
-            x: editing.origin.x + editing.textInset * geometry.imageScale,
-            y: editing.origin.y
+            x: editing.origin.x + inset.x * geometry.imageScale,
+            y: editing.origin.y + inset.y * geometry.imageScale
         )
-        guard !string.isEmpty else { return anchor }
+        guard !string.isEmpty else { return (anchor, nil) }
+
         let source = geometry.sourceRect
-        let size = AnnotationRenderer.textSize(for: string, style: editing.style)
-        // A string wider or taller than the visible image cannot be rescued by shifting: pin it
-        // to the edge and let it clip — identically here and in the export, which is what the
-        // editor width below enforces.
-        return CGPoint(
-            x: min(anchor.x, max(source.minX, source.maxX - size.width)),
-            y: min(anchor.y, max(source.minY, source.maxY - size.height))
-        )
+        // Measured with no wrap first, which already honours the newlines the user typed.
+        let natural = AnnotationRenderer.textSize(for: string, style: editing.style, maxWidth: nil)
+        let wrapWidth: CGFloat? = natural.width > source.width ? source.width : nil
+        let size = wrapWidth == nil
+            ? natural
+            : AnnotationRenderer.textSize(for: string, style: editing.style, maxWidth: wrapWidth)
+        // Wrapped text is as wide as the image allows, so there is nowhere left to shift it to:
+        // it starts at the left edge. Unwrapped text keeps the shift-to-fit behaviour.
+        let x = wrapWidth == nil ? min(anchor.x, max(source.minX, source.maxX - size.width)) : source.minX
+        // The vertical shift matters more now than it did: several lines can run off the bottom
+        // where one line could not.
+        let y = min(anchor.y, max(source.minY, source.maxY - size.height))
+        return (CGPoint(x: x, y: y), wrapWidth)
     }
 
     /// The string as it will be drawn: trimmed, so the editor and the commit measure the same
     /// characters and cannot place them differently.
     private func editedString(of editing: TextEditing) -> String {
-        let raw = editing.field.currentEditor()?.string ?? editing.field.stringValue
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        editing.textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Places and sizes the editor for the geometry and the text in force *now*. Called again
@@ -477,38 +509,53 @@ final class AnnotationCanvasView: NSView {
     /// annotation and a preview drawn at a stale scale, or running past the crop, is a lie.
     private func fitEditor(_ editing: TextEditing) {
         let geometry = self.geometry
-        let font = AnnotationRenderer.font(for: editing.style, scale: 1 / geometry.imageScale)
-        editing.field.font = font
-        let glyph = geometry.viewPoint(fromImage: glyphOrigin(
-            for: editedString(of: editing),
-            editing: editing,
-            geometry: geometry
-        ))
-        let height = ceil(font.ascender - font.descender + font.leading) + 4
-        // The editor ends exactly where the export ends, so a string too wide for the crop is
-        // cut in the same place on screen as in the PNG. One inset, for the leading side only:
-        // measured, a `.byClipping` cell runs its glyphs to the frame's trailing edge rather
-        // than reserving padding there, so a second inset would paint 2 pt into the letterbox.
-        // The floor keeps a caret's worth of field when the anchor is hard against the right
-        // edge and nothing has been typed yet.
-        let width = max(Self.minimumEditorWidth, geometry.displayRect.maxX - glyph.x + editing.textInset)
-        editing.field.frame = CGRect(
-            x: glyph.x - editing.textInset,
-            y: glyph.y,
+        let scale = 1 / geometry.imageScale
+        let font = AnnotationRenderer.font(for: editing.style, scale: scale)
+        editing.textView.font = font
+
+        let string = editedString(of: editing)
+        let placement = placement(for: string, editing: editing, geometry: geometry)
+        let inset = Self.textOrigin(of: editing.textView)
+        let glyph = geometry.viewPoint(fromImage: placement.origin)
+        let size = AnnotationRenderer.textSize(
+            for: string,
+            style: editing.style,
+            maxWidth: placement.wrapWidth
+        )
+
+        // The frame is the editor's wrap width — `widthTracksTextView` ties the container to it —
+        // and it is the width the renderer *used*, not the width it was allowed. That
+        // difference is load-bearing. Glyph advances are not linear in point size, so at the
+        // preview's smaller font a word the renderer rejected can still fit inside the full
+        // wrap width: measured, "far wider than this" packed onto one 215.6 px line on screen
+        // where the renderer broke it at 199.8 px. Handing the editor the used width removes
+        // that slack, and does so in both directions — every line the renderer kept fits,
+        // because no line exceeds the longest one, and every word it rejected still overflows,
+        // because the used width is stricter than the wrap width it was rejected against.
+        let width = placement.wrapWidth == nil
+            ? max(Self.minimumEditorWidth, ceil(size.width * scale) + 1)
+            : max(Self.minimumEditorWidth, size.width * scale)
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let height = min(
+            max(lineHeight, ceil(size.height * scale)) + 4,
+            max(lineHeight, geometry.displayRect.maxY - glyph.y)
+        )
+        editing.textView.frame = CGRect(
+            x: glyph.x - inset.x,
+            y: glyph.y - inset.y,
             width: width,
             height: height
         )
     }
 
-    /// Measured, not assumed: `NSTextFieldCell` lays its glyphs out inset horizontally from the
-    /// cell's leading edge by the field editor's line-fragment padding, and an empty cell's
-    /// width is exactly that padding on each side. `drawingRect(forBounds:)` cannot supply it —
-    /// on a borderless, non-background-drawing field it returns the bare bounds. Must be read
-    /// while the field is still empty. The vertical inset is zero (the cell top-aligns its one
-    /// line), which is why only x is compensated.
-    private static func textInset(of field: NSTextField) -> CGFloat {
-        guard let cell = field.cell else { return 0 }
-        return cell.cellSize.width / 2
+    /// Measured, not ported. The old `NSTextField` held its glyphs `cellSize.width / 2` inside
+    /// the cell; `NSTextView` positions its text with `textContainerOrigin` plus the container's
+    /// `lineFragmentPadding` instead, and that constant does not carry over. With the container
+    /// inset and the padding both zeroed this reads (0, 0) — but it is read from the view rather
+    /// than assumed, because anything non-zero here shifts every committed annotation.
+    private static func textOrigin(of textView: NSTextView) -> CGPoint {
+        let origin = textView.textContainerOrigin
+        return CGPoint(x: origin.x + (textView.textContainer?.lineFragmentPadding ?? 0), y: origin.y)
     }
 
     /// Internal so the window controller's delivery path can resolve a half-typed label before
@@ -516,19 +563,17 @@ final class AnnotationCanvasView: NSView {
     func commitTextEditing() {
         guard let editing = textEditing else { return }
         textEditing = nil
-        // Read before the teardown, and prefer the field editor: while an edit is live it is
-        // the authoritative copy of what the user has typed.
-        let typed = editing.field.currentEditor()?.string ?? editing.field.stringValue
-        let string = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The same placement the editor was using, recomputed against the geometry in force
-        // now — so a resize or a crop mid-edit commits where the user was last shown the text,
-        // and the extent-aware shift applies to the committed annotation too. Deriving it from
-        // the shared function rather than reading the field's frame removes the round trip
-        // through `textInset` entirely.
-        let origin = glyphOrigin(for: string, editing: editing, geometry: geometry)
+        let string = editedString(of: editing)
+        // The same placement the editor was laying out with, recomputed against the geometry in
+        // force now — so a resize or a crop mid-edit commits where the user was last shown the
+        // text, and the wrap width stored on the annotation is exactly the one on screen.
+        let placement = placement(for: string, editing: editing, geometry: geometry)
         endEditing(editing)
         guard !string.isEmpty else { return }
-        document.append(Annotation(kind: .text(origin: origin, string: string), style: editing.style))
+        document.append(Annotation(
+            kind: .text(origin: placement.origin, string: string, wrapWidth: placement.wrapWidth),
+            style: editing.style
+        ))
     }
 
     /// Discards a half-typed label. A no-op when nothing is being edited.
@@ -539,18 +584,25 @@ final class AnnotationCanvasView: NSView {
     }
 
     private func endEditing(_ editing: TextEditing) {
-        // Detach first: tearing the field down ends editing, which would otherwise re-enter.
-        editing.field.delegate = nil
-        editing.field.removeFromSuperview()
+        // Detach first: tearing the editor down ends editing, which would otherwise re-enter.
+        editing.textView.delegate = nil
+        editing.textView.removeFromSuperview()
         window?.makeFirstResponder(self)
     }
 }
 
-extension AnnotationCanvasView: NSTextFieldDelegate {
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+extension AnnotationCanvasView: NSTextViewDelegate {
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
         case #selector(NSResponder.insertNewline(_:)):
+            // Return still commits: that is the fast path the whole app is built around.
             commitTextEditing()
+            return true
+        case #selector(NSResponder.insertLineBreak(_:)):
+            // ⇧↩ starts a second line under the first. AppKit's own `insertLineBreak:` inserts
+            // U+2028, which lays out identically but is a surprise to anything that later reads
+            // the string, so a plain newline goes in instead.
+            textView.insertText("\n", replacementRange: textView.selectedRange())
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             // Escape cancels the edit and stops there: it must not close the window.
@@ -561,16 +613,15 @@ extension AnnotationCanvasView: NSTextFieldDelegate {
         }
     }
 
-    /// Re-places the editor on every keystroke: once the string reaches the crop's edge it
-    /// stops growing rightward and starts pushing itself left, the way text scrolls when the
-    /// caret reaches the end of a field — except nothing is hidden, because the whole string
-    /// moves rather than sliding out of a fixed box.
-    func controlTextDidChange(_ obj: Notification) {
+    /// Re-places the editor on every keystroke: text that reaches the crop's edge pushes itself
+    /// left rather than running off, and once it cannot fit at all it wraps — in both cases the
+    /// editor has to be re-laid-out to keep showing what will actually be exported.
+    func textDidChange(_ notification: Notification) {
         guard let textEditing else { return }
         fitEditor(textEditing)
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
+    func textDidEndEditing(_ notification: Notification) {
         // Any other way of losing focus — a toolbar click, say — commits what was typed.
         commitTextEditing()
     }

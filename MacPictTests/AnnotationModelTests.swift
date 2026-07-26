@@ -634,4 +634,44 @@ final class AnnotationModelTests: XCTestCase {
         let fourth = Annotation(kind: first.kind, style: first.style)
         XCTAssertNotEqual(first, fourth)
     }
+
+    func testTextAnnotationEqualityDistinguishesWrapWidth() {
+        let id = UUID()
+        let origin = CGPoint(x: 30, y: 40)
+        func text(_ wrapWidth: CGFloat?) -> Annotation {
+            Annotation(id: id, kind: .text(origin: origin, string: "two words", wrapWidth: wrapWidth), style: .default)
+        }
+
+        XCTAssertEqual(text(200), text(200), "same wrap width")
+        // If these compared equal, undo/redo could silently collapse one layout into another.
+        XCTAssertNotEqual(text(200), text(240), "different wrap widths")
+        XCTAssertNotEqual(text(nil), text(200), "nil is not a numeric width")
+        XCTAssertNotEqual(text(200), text(nil), "and the reverse")
+        XCTAssertEqual(text(nil), text(nil), "both unwrapped")
+    }
+
+    func testWrapWidthSurvivesUndoAndRedo() throws {
+        let document = try makeCroppableDocument()
+        let wrapped = Annotation(kind: .text(origin: CGPoint(x: 5, y: 5), string: "a b c", wrapWidth: 120), style: .default)
+        let unwrapped = Annotation(kind: .text(origin: CGPoint(x: 5, y: 60), string: "d e f", wrapWidth: nil), style: .default)
+
+        document.append(wrapped)
+        document.append(unwrapped)
+        document.undo()
+        document.undo()
+        XCTAssertEqual(document.annotations, [])
+
+        document.redo()
+        document.redo()
+        XCTAssertEqual(document.annotations, [wrapped, unwrapped])
+
+        guard case let .text(_, _, wrapWidth) = document.annotations[0].kind else {
+            return XCTFail("expected text, got \(document.annotations[0].kind)")
+        }
+        XCTAssertEqual(wrapWidth, 120)
+        guard case let .text(_, _, missing) = document.annotations[1].kind else {
+            return XCTFail("expected text, got \(document.annotations[1].kind)")
+        }
+        XCTAssertNil(missing)
+    }
 }

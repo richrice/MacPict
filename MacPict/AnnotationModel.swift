@@ -114,7 +114,10 @@ struct Annotation: Identifiable, Equatable, Sendable {
         case arrow(from: CGPoint, to: CGPoint)
         case box(CGRect)
         case ellipse(CGRect)
-        case text(origin: CGPoint, string: String)
+        /// `wrapWidth` is in image pixels; nil means no wrapping, honouring only explicit
+        /// newlines. It is frozen at commit time and stored rather than derived from the
+        /// current crop, so undoing a crop can never silently reflow committed text.
+        case text(origin: CGPoint, string: String, wrapWidth: CGFloat?)
     }
 
     let id: UUID

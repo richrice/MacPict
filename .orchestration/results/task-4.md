@@ -635,3 +635,95 @@ Zero Swift warnings (only the pre-existing appintentsmetadataprocessor note). 26
 are mine — 14 `AnnotationRendererTests` and 12 `SnapshotExporterTests`. The total is 174
 rather than 165 because other tasks landed tests while I worked; no failure remained anywhere,
 including in the concurrently edited `AnnotationCanvasView.swift` / `AnnotationWindowController.swift`.
+
+---
+
+## Follow-up — wrapWidth through the draw path
+
+### The change
+
+One line in `MacPict/AnnotationRenderer.swift`:
+
+```swift
+case let .text(origin, string, wrapWidth):
+    drawText(string, at: origin, style: style, maxWidth: wrapWidth, in: context, scale: scale)
+```
+
+Plus the two existing `.text(origin:string:)` construction sites in
+`MacPictTests/AnnotationRendererTests.swift` updated to the new case shape with
+`wrapWidth: nil`, which is what keeps the single-line tests asserting the same behaviour they
+did before. Nothing about the image-pixel line-breaking decision or the per-line scaled
+drawing was touched.
+
+### New tests
+
+- `AnnotationRendererTests.testAnnotationWrapWidthReachesTheRendererThroughDraw` — builds a
+  real `Annotation` with a non-nil `wrapWidth` and drives the full `draw` switch, then
+  compares it **line by line** (by line box, via `inkColumns(inRows:)`) against a direct
+  `drawText` call with the same width. It also renders the `wrapWidth: nil` annotation and
+  asserts it is still one long line, so the test cannot pass against a switch that wrapped
+  everything at some fixed width.
+- `SnapshotExporterTests.testExportedPNGBreaksLinesLikeADirectDrawTextCall` — end to end
+  through `flatten`, the PNG encode and the decode, comparing each line's ink columns with a
+  direct `drawText` render, and asserting there is no extra line below the last line box. It
+  draws over a white base image so ink reads the same way it does in the renderer tests, which
+  also keeps it clear of the premultiplied-little-endian trap: the comparison is between two
+  buffers produced by the same read-back path.
+
+### Mutation result
+
+Hardcoding `maxWidth: nil` in the switch fails, with named assertions in three suites:
+
+```
+AnnotationRendererTests.testAnnotationWrapWidthReachesTheRendererThroughDraw
+  : ("Optional(ClosedRange(10...719))") is not equal to ("Optional(ClosedRange(10...167))") - line 0
+  : ("nil") is not equal to ("Optional(ClosedRange(11...166))") - line 1   (and lines 2, 3)
+  : XCTAssertLessThanOrEqual failed: ("720.0") is greater than ("210.0")
+SnapshotExporterTests.testExportedPNGBreaksLinesLikeADirectDrawTextCall
+  : ("Optional(ClosedRange(10...398))") is not equal to ("Optional(ClosedRange(10...167))") - line 0 broke differently in the export
+  : XCTUnwrap failed - line 1 missing from the PNG
+AnnotationWindowControllerTests.testOverWideStringWrapsAtTheSameBreaksInEditorAndExport
+  : ("187.5") is not equal to ("219.0") +/- ("6.0") - editor and export broke lines differently
+```
+
+Reverted and `diff`-verified against the pre-mutation copy afterwards.
+
+### Can the `lineFragmentPadding = 0` requirement be made structurally safe?
+
+Partly, and the best protection already exists — it is a test, not a constant.
+
+- **What exists now.** Task 5 sets `textView.textContainer?.lineFragmentPadding = 0`
+  (`AnnotationCanvasView.swift:440`) and owns
+  `testOverWideStringWrapsAtTheSameBreaksInEditorAndExport`, which compares the editor's line
+  breaks against the export's. My mutation run above is evidence that this test is genuinely
+  load-bearing: it failed the moment the two layouts diverged. A shared constant would not have
+  caught that; the parity test did. So the requirement is already defended by the right kind of
+  check.
+- **What I could add, and why I have not.** I could expose either
+  `AnnotationRenderer.textContainerPadding` or, better, a
+  `static func configure(_ container: NSTextContainer)` that applies the padding, wrapping mode
+  and line limit the renderer uses, so the editor's container is configured *by* the renderer
+  rather than in parallel with it. That converts "remember this" into "call this". I have not
+  added it because it only pays off if `AnnotationCanvasView.swift` adopts it, and that file is
+  not mine — an unused API in my file would be speculative on its own. **If you want it, say so
+  and I will add the helper; Task 5 then replaces three lines of container setup with one
+  call.** That is the version I would recommend, since the padding is only one of three
+  settings that have to match (`lineBreakMode` and `maximumNumberOfLines` are the others, and
+  neither is mentioned in anyone's brief).
+
+### Validation
+
+```
+./scripts/bootstrap.sh   -> 0
+./scripts/build.sh       -> 0     ** BUILD SUCCEEDED **
+./scripts/test.sh        -> 0     ** TEST SUCCEEDED **, Executed 184 tests, 0 failures
+```
+
+Zero Swift warnings (only the pre-existing appintentsmetadataprocessor note). 28 of the 184
+are mine — 15 `AnnotationRendererTests` and 13 `SnapshotExporterTests`.
+
+Transient red builds while waiting, both in Task 5's file and both reported rather than fixed:
+`AnnotationCanvasView.swift:531: missing argument for parameter 'wrapWidth' in call`, then
+`AnnotationCanvasView.swift:443-444: value of type 'NSTextContainer' has no member
+'widthTracksTextContainer'` (the UIKit spelling; AppKit's is `widthTracksTextView`). Both were
+resolved by Task 5 on their own, after which the suite went green.

@@ -225,7 +225,7 @@ final class AnnotationRendererTests: XCTestCase {
         // A full stop is ink at the baseline and nowhere else, so an upside-down draw moves
         // every inked pixel from the bottom half of the text box into the top half.
         let size = AnnotationRenderer.textSize(for: ".", style: style)
-        let text = annotation(.text(origin: origin, string: "."), style: style)
+        let text = annotation(.text(origin: origin, string: ".", wrapWidth: nil), style: style)
         let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 400, height: 400) { context in
             AnnotationRenderer.draw([text], in: context, scale: scale)
         })
@@ -325,7 +325,7 @@ final class AnnotationRendererTests: XCTestCase {
         // ink anywhere. The removed outline was black for a light colour like yellow, so it
         // would darken every glyph edge in this render.
         let style = AnnotationStyle(color: .yellow, size: .large)
-        let text = annotation(.text(origin: CGPoint(x: 10, y: 10), string: "Hgy"), style: style)
+        let text = annotation(.text(origin: CGPoint(x: 10, y: 10), string: "Hgy", wrapWidth: nil), style: style)
         let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 300, height: 160) { context in
             AnnotationRenderer.draw([text], in: context, scale: 1.0)
         })
@@ -519,6 +519,52 @@ final class AnnotationRendererTests: XCTestCase {
         let ink = try XCTUnwrap(buffer.inkBounds())
         XCTAssertLessThanOrEqual(ink.maxX, origin.x + maxWidth, "the word is broken, never overflowed")
         XCTAssertGreaterThan(buffer.inkLineBands().count, 1)
+    }
+
+    /// The switch in `draw` is the thing under test here: `drawText` already had its own
+    /// coverage, so these go through a real `Annotation` to prove the case's `wrapWidth`
+    /// reaches the renderer rather than being dropped on the way.
+    func testAnnotationWrapWidthReachesTheRendererThroughDraw() throws {
+        let style = AnnotationStyle(color: .black, size: .medium)
+        let origin = CGPoint(x: 10, y: 10)
+        let maxWidth: CGFloat = 200
+
+        let wrapped = annotation(.text(origin: origin, string: Self.wrapSample, wrapWidth: maxWidth), style: style)
+        let unwrapped = annotation(.text(origin: origin, string: Self.wrapSample, wrapWidth: nil), style: style)
+
+        let viaDraw = try XCTUnwrap(RenderTestSupport.flippedRender(width: 900, height: 400) { context in
+            AnnotationRenderer.draw([wrapped], in: context, scale: 1.0)
+        })
+        let viaDrawText = try XCTUnwrap(RenderTestSupport.flippedRender(width: 900, height: 400) { context in
+            AnnotationRenderer.drawText(
+                Self.wrapSample,
+                at: origin,
+                style: style,
+                maxWidth: maxWidth,
+                in: context,
+                scale: 1.0
+            )
+        })
+        let plain = try XCTUnwrap(RenderTestSupport.flippedRender(width: 900, height: 400) { context in
+            AnnotationRenderer.draw([unwrapped], in: context, scale: 1.0)
+        })
+
+        // Line for line, the annotation path and the direct call must paint the same thing:
+        // a switch that altered or rounded the width would move a break.
+        let lineHeight = AnnotationRenderer.textSize(for: "X", style: style, maxWidth: nil).height
+        let lineCount = Int((AnnotationRenderer.textSize(for: Self.wrapSample, style: style, maxWidth: maxWidth).height / lineHeight).rounded())
+        XCTAssertGreaterThan(lineCount, 2)
+        for index in 0..<lineCount {
+            let rows = Int(origin.y + CGFloat(index) * lineHeight)..<Int(origin.y + CGFloat(index + 1) * lineHeight)
+            XCTAssertEqual(viaDraw.inkColumns(inRows: rows), viaDrawText.inkColumns(inRows: rows), "line \(index)")
+        }
+
+        // And a nil wrapWidth must still be a single line — otherwise the test above could
+        // pass with a switch that wrapped everything at some fixed width.
+        let plainInk = try XCTUnwrap(plain.inkBounds())
+        let wrappedInk = try XCTUnwrap(viaDraw.inkBounds())
+        XCTAssertGreaterThan(plainInk.width, maxWidth * 2, "nil wrapWidth means one long line")
+        XCTAssertLessThanOrEqual(wrappedInk.maxX, origin.x + maxWidth)
     }
 
     func testDegenerateTextInputsAreSafe() throws {

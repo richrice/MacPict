@@ -45,8 +45,8 @@ enum AnnotationRenderer {
             stroke(NSBezierPath(rect: scaled(rect, scale)), style: style, scale: scale)
         case let .ellipse(rect):
             stroke(NSBezierPath(ovalIn: scaled(rect, scale)), style: style, scale: scale)
-        case let .text(origin, string):
-            drawText(string, at: origin, style: style, maxWidth: nil, in: context, scale: scale)
+        case let .text(origin, string, wrapWidth):
+            drawText(string, at: origin, style: style, maxWidth: wrapWidth, in: context, scale: scale)
         }
     }
 

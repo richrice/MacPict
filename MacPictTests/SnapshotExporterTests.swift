@@ -67,6 +67,40 @@ final class SnapshotExporterTests: XCTestCase {
         XCTAssertEqual(Int(sample.g), expected.y % 256, accuracy: 1, "green encodes y", file: file, line: line)
     }
 
+    /// End to end: a stored `wrapWidth` has to survive the annotation switch, the flatten and
+    /// the PNG encode, and come out breaking lines exactly where a direct `drawText` call
+    /// with the same width does. A white base image is used so ink reads the same way the
+    /// renderer tests read it.
+    func testExportedPNGBreaksLinesLikeADirectDrawTextCall() throws {
+        let sample = "The quick brown fox jumps over the lazy dog"
+        let style = AnnotationStyle(color: .black, size: .medium)
+        let origin = CGPoint(x: 10, y: 10)
+        let maxWidth: CGFloat = 200
+        let size = (width: 400, height: 400)
+
+        let white = try XCTUnwrap(RenderTestSupport.rawImage(width: size.width, height: size.height) { _, _ in (255, 255, 255) })
+        let annotation = Annotation(kind: .text(origin: origin, string: sample, wrapWidth: maxWidth), style: style)
+        let exported = try XCTUnwrap(RenderPixelBuffer(image: try decodePNG(
+            try SnapshotExporter.png(image: white, annotations: [annotation])
+        )))
+        let direct = try XCTUnwrap(RenderTestSupport.flippedRender(width: size.width, height: size.height) { context in
+            AnnotationRenderer.drawText(sample, at: origin, style: style, maxWidth: maxWidth, in: context, scale: 1.0)
+        })
+
+        let lineHeight = AnnotationRenderer.textSize(for: "X", style: style, maxWidth: nil).height
+        let lineCount = Int((AnnotationRenderer.textSize(for: sample, style: style, maxWidth: maxWidth).height / lineHeight).rounded())
+        XCTAssertGreaterThan(lineCount, 2, "the sample must wrap for this to prove anything")
+        for index in 0..<lineCount {
+            let rows = Int(origin.y + CGFloat(index) * lineHeight)..<Int(origin.y + CGFloat(index + 1) * lineHeight)
+            let exportedLine = try XCTUnwrap(exported.inkColumns(inRows: rows), "line \(index) missing from the PNG")
+            XCTAssertEqual(exportedLine, direct.inkColumns(inRows: rows), "line \(index) broke differently in the export")
+        }
+        XCTAssertNil(
+            exported.inkColumns(inRows: Int(origin.y + CGFloat(lineCount) * lineHeight + 2)..<size.height),
+            "an extra line in the export means the wrap width was lost"
+        )
+    }
+
     func testFlattenPreservesPixelDimensionsExactly() throws {
         let image = try makeImage()
         let box = Annotation(kind: .box(CGRect(x: 10, y: 10, width: 50, height: 30)), style: .default)
