@@ -92,9 +92,18 @@ final class CoordinatorTests: XCTestCase {
     private let imageWidth = 120
     private let imageHeight = 80
 
+    /// Never `.standard`: that is the user's real preference file, and this suite writes a
+    /// capture shortcut into it on every run.
+    private static let defaultsSuite = "com.macpict.tests.CoordinatorTests"
+
     private var capture: FakeScreenCapture!
     private var delivery: FakeDelivery!
     private var permission: FakePermission!
+    private var defaults: UserDefaults!
+    private var settings: SettingsStore!
+    private var hotkeyManager: GlobalHotkeyManager!
+    /// Managers that hold a shortcut so the coordinator's own registration of it must fail.
+    private var blockers: [GlobalHotkeyManager] = []
     private var coordinator: AppCoordinator!
 
     override func setUp() async throws {
@@ -104,12 +113,24 @@ final class CoordinatorTests: XCTestCase {
         // A granting fake, so the capture flow runs the real permission gate instead of
         // bypassing it — and so nothing in this suite can reach the system's TCC prompt.
         permission = FakePermission(status: .granted)
+        defaults = try XCTUnwrap(UserDefaults(suiteName: Self.defaultsSuite))
+        defaults.removePersistentDomain(forName: Self.defaultsSuite)
+        settings = SettingsStore(defaults: defaults)
+        hotkeyManager = GlobalHotkeyManager()
         coordinator = makeCoordinator()
     }
 
     override func tearDown() async throws {
         coordinator?.stop()
         coordinator = nil
+        for blocker in blockers {
+            blocker.unregister()
+        }
+        blockers.removeAll()
+        hotkeyManager = nil
+        settings = nil
+        defaults?.removePersistentDomain(forName: Self.defaultsSuite)
+        defaults = nil
         permission = nil
         delivery = nil
         capture = nil
@@ -121,8 +142,58 @@ final class CoordinatorTests: XCTestCase {
             permission: permission,
             capture: capture,
             delivery: delivery,
-            hotkey: GlobalHotkeyManager()
+            hotkey: hotkeyManager,
+            settings: settings
         )
+    }
+
+    /// Shortcuts are taken from the shipped presets rather than hand-built, so a test cannot
+    /// assert against a combination the settings window would never offer.
+    private func preset(_ displayString: String) throws -> HotkeyShortcut {
+        try XCTUnwrap(
+            HotkeyShortcut.presetGroups.flatMap(\.shortcuts).first { $0.displayString == displayString }
+        )
+    }
+
+    /// Occupies `shortcut` so the coordinator's registration of it comes back `.conflict`.
+    /// `RegisterEventHotKey` returns `eventHotKeyExistsErr` for a second registration of the same
+    /// combination inside one process, which is the only way to make a registration fail on
+    /// demand — a bogus key code registers happily.
+    private func block(_ shortcut: HotkeyShortcut) {
+        let blocker = GlobalHotkeyManager()
+        blockers.append(blocker)
+        let status = blocker.register(shortcut)
+        XCTAssertTrue(
+            status.isRegistered,
+            "test premise: \(shortcut.displayString) has to be free for this test to occupy it, but got \(status)"
+        )
+    }
+
+    /// The write-back of a reverted shortcut is deliberately deferred by one turn of the main
+    /// actor (see `AppCoordinator.revertStoredShortcut`), so a test asserting on it has to let
+    /// that turn happen. Bounded, and every assertion is still made afterwards, so a revert that
+    /// never arrives fails the test rather than hanging it.
+    private func awaitStoredShortcut(_ expected: HotkeyShortcut) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while settings.hotkey != expected, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    /// The settings observer is delivered on `OperationQueue.main`, which may hand the block back
+    /// on a later turn of the loop rather than during `post`.
+    private func awaitSettingsWindowController() async throws -> SettingsWindowController {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while coordinator.settingsWindowController == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        return try XCTUnwrap(coordinator.settingsWindowController)
+    }
+
+    /// What a *fresh launch* would load out of the same defaults — a second `SettingsStore`
+    /// rather than a hand-decoded key, so this asserts through the production read path.
+    private func shortcutAsPersisted() -> HotkeyShortcut {
+        SettingsStore(defaults: defaults).hotkey
     }
 
     private func makeImage(width: Int, height: Int) throws -> CGImage {
@@ -338,5 +409,210 @@ final class CoordinatorTests: XCTestCase {
         XCTAssertEqual(first.document.annotations, [annotation])
         XCTAssertEqual(delivery.copiedImages.count, 0)
         XCTAssertEqual(delivery.copiedPaths.count, 0)
+    }
+
+    // MARK: - Configurable capture shortcut
+    //
+    // These are the only tests in the suite that call `start()`. They assert on
+    // `registeredShortcuts` — the coordinator's own record of what it asked for — rather than
+    // on `GlobalHotkeyManager.status`, because whether Carbon accepts a given combination
+    // depends on what else is running on the machine and would make the suite flaky.
+
+    func testStartRegistersTheStoredShortcutRatherThanTheBuiltInDefault() throws {
+        let chosen = try preset("F19")
+        XCTAssertNotEqual(chosen, .captureDefault)
+        settings.hotkey = chosen
+        coordinator = makeCoordinator()
+
+        coordinator.start()
+
+        XCTAssertEqual(coordinator.registeredShortcuts, [chosen])
+        // Stated separately so that a machine where F19 is already taken fails here, naming the
+        // cause, instead of looking like a bug in the title.
+        XCTAssertEqual(hotkeyManager.activeShortcut, chosen)
+        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (F19)")
+    }
+
+    func testChangingTheStoredShortcutReRegistersWithTheNewOne() throws {
+        coordinator.start()
+        XCTAssertEqual(coordinator.registeredShortcuts, [.captureDefault])
+        let replacement = try preset("F18")
+
+        settings.hotkey = replacement
+
+        XCTAssertEqual(coordinator.registeredShortcuts, [.captureDefault, replacement])
+        XCTAssertEqual(hotkeyManager.activeShortcut, replacement)
+        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (F18)")
+
+        // Re-selecting the shortcut already in force must not tear a working registration down
+        // and rebuild it, which is what `.removeDuplicates()` is there to prevent.
+        settings.hotkey = replacement
+
+        XCTAssertEqual(coordinator.registeredShortcuts, [.captureDefault, replacement])
+    }
+
+    /// A conflict is what the user gets when the combination they picked is already owned by
+    /// another application. Saying nothing would leave them with a shortcut that silently does
+    /// nothing, so the row has to name it.
+    func testAConflictIsShownInTheMenuWithTheShortcutThatFailed() throws {
+        coordinator.start()
+
+        coordinator.updateHotkeyItem(for: .conflict("F13"))
+
+        let row = try XCTUnwrap(coordinator.hotkeyItem)
+        XCTAssertFalse(row.isHidden)
+        // Both halves matter: which shortcut failed, and that the previous one carried on.
+        XCTAssertEqual(row.title, "Shortcut conflict: F13 is already in use — still using ⌃⌥ C")
+
+        coordinator.updateHotkeyItem(for: .registered("⌃⌥ C"))
+
+        XCTAssertTrue(row.isHidden)
+    }
+
+    func testNotRegisteredIsAlsoShownRatherThanLeavingTheRowBlank() throws {
+        let doomed = try preset("F15")
+        block(doomed)
+        settings.hotkey = doomed
+        coordinator = makeCoordinator()
+        coordinator.start()
+
+        coordinator.updateHotkeyItem(for: .notRegistered)
+
+        let row = try XCTUnwrap(coordinator.hotkeyItem)
+        XCTAssertFalse(row.isHidden)
+        XCTAssertEqual(row.title, "Not registered — no capture shortcut is active")
+    }
+
+    /// The menu item is the fallback that makes a failed registration survivable, so it has to
+    /// keep capturing when the shortcut is dead. Driven through the item's own target/action,
+    /// not by calling `requestCapture()` directly.
+    func testTheCaptureMenuItemStillCapturesWhileTheHotkeyIsInAFailedState() async throws {
+        coordinator.start()
+        coordinator.updateHotkeyItem(for: .failed("Carbon error -50"))
+        XCTAssertEqual(
+            coordinator.hotkeyItem?.title,
+            "Registration failed: Carbon error -50 — still using ⌃⌥ C"
+        )
+        XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
+
+        let item = try XCTUnwrap(coordinator.captureItem)
+        let target = try XCTUnwrap(item.target as? NSObject)
+        _ = target.perform(try XCTUnwrap(item.action))
+        await coordinator.captureTask?.value
+
+        XCTAssertEqual(capture.callCount, 1)
+        XCTAssertNotNil(coordinator.activeWindowController)
+    }
+
+    func testTheMenuOffersSettingsAboveTheQuitSeparator() throws {
+        coordinator.start()
+
+        let menu = try XCTUnwrap(coordinator.captureItem?.menu)
+        let settingsIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == "Settings…" })
+        let quitIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == "Quit MacPict" })
+        XCTAssertLessThan(settingsIndex, quitIndex)
+        XCTAssertTrue(menu.items[settingsIndex + 1].isSeparatorItem)
+        // No ⌘, on the status menu item: ⌘, is routed from the app menu through
+        // `.macPictOpenSettings` instead, so there is only one binding for it.
+        XCTAssertEqual(menu.items[settingsIndex].keyEquivalent, "")
+    }
+
+    // MARK: - Recovery from a shortcut that will not register
+
+    /// The trap this closes: without the write-back the failed shortcut stays persisted, and the
+    /// next launch — a fresh process with nothing to revert to — comes up with no hotkey at all.
+    func testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive() async throws {
+        coordinator.start()
+        XCTAssertEqual(hotkeyManager.activeShortcut, .captureDefault)
+        let doomed = try preset("F18")
+        block(doomed)
+
+        settings.hotkey = doomed
+        try await awaitStoredShortcut(.captureDefault)
+
+        // Asked for once, and once only: the write-back must not come back round as a second
+        // registration.
+        XCTAssertEqual(coordinator.registeredShortcuts, [.captureDefault, doomed])
+        // The selection, and what a fresh launch would read, both follow what is really live.
+        XCTAssertEqual(settings.hotkey, .captureDefault)
+        XCTAssertEqual(shortcutAsPersisted(), .captureDefault)
+        XCTAssertEqual(hotkeyManager.activeShortcut, .captureDefault)
+        // The user still learns their pick did not take, and that the old one carried on.
+        XCTAssertEqual(
+            coordinator.hotkeyItem?.title,
+            "Shortcut conflict: F18 is already in use — still using ⌃⌥ C"
+        )
+        XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
+        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (⌃⌥ C)")
+    }
+
+    /// The fresh-launch case: nothing is live to revert to, so the user's own choice stays put
+    /// where they can see and change it, and the menu says outright that no shortcut is working.
+    func testAConflictWithNothingLiveKeepsTheSelectionAndSaysNoShortcutIsActive() throws {
+        let doomed = try preset("F17")
+        block(doomed)
+        settings.hotkey = doomed
+        coordinator = makeCoordinator()
+
+        coordinator.start()
+
+        XCTAssertEqual(coordinator.registeredShortcuts, [doomed])
+        XCTAssertNil(hotkeyManager.activeShortcut)
+        XCTAssertEqual(settings.hotkey, doomed)
+        XCTAssertEqual(shortcutAsPersisted(), doomed)
+        XCTAssertEqual(
+            coordinator.hotkeyItem?.title,
+            "Shortcut conflict: F17 is already in use — no capture shortcut is active"
+        )
+        XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
+        // No shortcut is in force, so the item promises none.
+        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer")
+    }
+
+    /// The menu item is the escape hatch that makes the no-shortcut case survivable.
+    func testTheCaptureMenuItemStillCapturesWhenNoShortcutCouldBeRegistered() async throws {
+        let doomed = try preset("F16")
+        block(doomed)
+        settings.hotkey = doomed
+        coordinator = makeCoordinator()
+        coordinator.start()
+        XCTAssertNil(hotkeyManager.activeShortcut)
+
+        let item = try XCTUnwrap(coordinator.captureItem)
+        let target = try XCTUnwrap(item.target as? NSObject)
+        _ = target.perform(try XCTUnwrap(item.action))
+        await coordinator.captureTask?.value
+
+        XCTAssertEqual(capture.callCount, 1)
+        XCTAssertNotNil(coordinator.activeWindowController)
+    }
+
+    // MARK: - ⌘, routing
+
+    func testTheOpenSettingsNotificationOpensTheSameWindowControllerAsTheMenuItem() async throws {
+        coordinator.start()
+        XCTAssertNil(coordinator.settingsWindowController)
+
+        NotificationCenter.default.post(name: .macPictOpenSettings, object: nil)
+
+        let fromNotification = try await awaitSettingsWindowController()
+
+        let menu = try XCTUnwrap(coordinator.captureItem?.menu)
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Settings…" })
+        let target = try XCTUnwrap(item.target as? NSObject)
+        _ = target.perform(try XCTUnwrap(item.action))
+
+        // Same instance: one window, reused, whichever way it is opened.
+        XCTAssertTrue(coordinator.settingsWindowController === fromNotification)
+    }
+
+    func testTheOpenSettingsNotificationIsIgnoredAfterStop() async throws {
+        coordinator.start()
+        coordinator.stop()
+
+        NotificationCenter.default.post(name: .macPictOpenSettings, object: nil)
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(coordinator.settingsWindowController)
     }
 }

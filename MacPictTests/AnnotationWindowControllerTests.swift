@@ -397,6 +397,131 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertTrue(try canvas().subviews.isEmpty)
     }
 
+    // MARK: - Editor / render parity (Repair 4)
+
+    /// The bounding box, in view points, of everything the canvas drew in the annotation
+    /// colour — the glyphs, whether they came from the live `NSTextField` or from
+    /// `AnnotationRenderer`. `cacheDisplay` includes subviews, so one measurement covers both.
+    /// Red (1, 0.2, 0.2) over a 0.3 grey screenshot on black, so "much more red than green"
+    /// isolates the text and nothing else.
+    private func redInk(of view: NSView) throws -> CGRect {
+        view.window?.layoutIfNeeded()
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+
+        let alphaFirst = rep.bitmapFormat.contains(.alphaFirst)
+        var samples = [Int](repeating: 0, count: 5)
+        var minX = Int.max, minY = Int.max, maxX = Int.min, maxY = Int.min
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                rep.getPixel(&samples, atX: x, y: y)
+                guard samples[alphaFirst ? 1 : 0] - samples[alphaFirst ? 2 : 1] > 64 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard minX <= maxX else {
+            XCTFail("no annotation-coloured pixels were drawn at all")
+            return .null
+        }
+        // `colorAt`/`getPixel` are top-left origin, as is the flipped canvas, so the only
+        // conversion needed is out of the bitmap's backing scale and into view points.
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        return CGRect(
+            x: CGFloat(minX) / scale,
+            y: CGFloat(minY) / scale,
+            width: CGFloat(maxX - minX + 1) / scale,
+            height: CGFloat(maxY - minY + 1) / scale
+        )
+    }
+
+    /// Opens the inline editor at a chosen point in *image* pixels, leaving room for the
+    /// glyphs inside the visible image so neither render is clipped by `displayRect`.
+    @discardableResult
+    private func beginTextEdit(_ string: String, atImagePoint imagePoint: CGPoint) throws -> NSTextField {
+        controller.window?.layoutIfNeeded()
+        let canvas = try canvas()
+        XCTAssertFalse(canvas.geometry.displayRect.isEmpty, "canvas needs a real size to place the editor")
+        controller.document.tool = .text
+        let viewPoint = canvas.geometry.viewPoint(fromImage: imagePoint)
+        canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(fromCanvas: viewPoint)))
+        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView, "the field editor is what the user types into and what draws the preview")
+        editor.insertText(string, replacementRange: NSRange(location: 0, length: 0))
+        return field
+    }
+
+    /// The regression guard for the reported "text moves when I hit Enter". `NSTextField` holds
+    /// its glyphs a couple of points inside the cell; `AnnotationRenderer` puts the layout box's
+    /// corner on the annotation origin. The measurement is the assertion: the same glyphs are
+    /// photographed off the canvas before and after the commit, and the two boxes have to
+    /// coincide. Nothing here re-derives the offset the fix applies.
+    func testCommittedTextLandsWhereTheEditorDrewIt() throws {
+        let canvas = try canvas()
+        try beginTextEdit("Hxy", atImagePoint: CGPoint(x: 10, y: 10))
+
+        let editorInk = try redInk(of: canvas)
+        canvas.commitTextEditing()
+        XCTAssertEqual(committedTexts(), ["Hxy"])
+        let renderedInk = try redInk(of: canvas)
+
+        XCTAssertEqual(renderedInk.minX, editorInk.minX, accuracy: 1, "committed glyphs moved horizontally")
+        XCTAssertEqual(renderedInk.minY, editorInk.minY, accuracy: 1, "committed glyphs moved vertically")
+        XCTAssertEqual(renderedInk.width, editorInk.width, accuracy: 1)
+        XCTAssertEqual(renderedInk.height, editorInk.height, accuracy: 1)
+    }
+
+    /// Item 2: the editor's font was fixed when editing began, so a window resize mid-edit left
+    /// it previewing one size and committing another. Same photograph-and-compare, with the
+    /// geometry changed under the live edit — and the resize is asserted to have actually moved
+    /// the scale, so the test cannot pass by the resize being a no-op.
+    func testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing() throws {
+        let canvas = try canvas()
+        try beginTextEdit("Hxy", atImagePoint: CGPoint(x: 10, y: 10))
+        let scaleBefore = canvas.geometry.imageScale
+        let inkBefore = try redInk(of: canvas)
+
+        controller.window?.setContentSize(CGSize(width: 1000, height: 400))
+        controller.window?.layoutIfNeeded()
+        XCTAssertNotEqual(canvas.geometry.imageScale, scaleBefore, accuracy: 0.001, "the resize has to change the scale or the test proves nothing")
+
+        let editorInk = try redInk(of: canvas)
+        XCTAssertGreaterThan(editorInk.height, inkBefore.height * 1.2, "the editor must have grown with the canvas")
+        canvas.commitTextEditing()
+        let renderedInk = try redInk(of: canvas)
+
+        XCTAssertEqual(renderedInk.minX, editorInk.minX, accuracy: 1)
+        XCTAssertEqual(renderedInk.minY, editorInk.minY, accuracy: 1)
+        XCTAssertEqual(renderedInk.width, editorInk.width, accuracy: 1)
+        XCTAssertEqual(renderedInk.height, editorInk.height, accuracy: 1)
+    }
+
+    /// A crop *is* reachable while an edit is live — a crop drag commits the text first, but
+    /// ⇧⌘R and ⌘Z are key equivalents that reach the canvas whatever holds first responder.
+    func testTextEditLiveAcrossACropCommitsAtTheSizeTheEditorWasShowing() throws {
+        controller.window?.layoutIfNeeded()
+        let canvas = try canvas()
+        controller.document.crop(to: CGRect(x: 0, y: 0, width: 60, height: 40))
+        controller.window?.layoutIfNeeded()
+
+        try beginTextEdit("Hxy", atImagePoint: CGPoint(x: 6, y: 6))
+        let scaleBefore = canvas.geometry.imageScale
+
+        _ = canvas.performKeyEquivalent(with: try keyEvent("r", [.command, .shift]))
+        XCTAssertFalse(controller.document.isCropped, "the crop reset has to land while the edit is live")
+        controller.window?.layoutIfNeeded()
+        XCTAssertNotEqual(canvas.geometry.imageScale, scaleBefore, accuracy: 0.001, "the reset has to change the scale or the test proves nothing")
+
+        let editorInk = try redInk(of: canvas)
+        canvas.commitTextEditing()
+        let renderedInk = try redInk(of: canvas)
+
+        XCTAssertEqual(renderedInk.minX, editorInk.minX, accuracy: 1)
+        XCTAssertEqual(renderedInk.minY, editorInk.minY, accuracy: 1)
+        XCTAssertEqual(renderedInk.width, editorInk.width, accuracy: 1)
+        XCTAssertEqual(renderedInk.height, editorInk.height, accuracy: 1)
+    }
+
     /// A successful delivery is still one-shot: the close that follows it must not turn into
     /// a cancel the coordinator would act on.
     func testSuccessfulCopyFollowedByCloseReportsNoCancel() throws {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreGraphics
 import Foundation
 import OSLog
@@ -19,6 +20,7 @@ final class AppCoordinator: NSObject {
 
     private static let idleSymbol = "camera.viewfinder"
     private static let successSymbol = "checkmark.circle.fill"
+    private static let captureTitle = "Capture Display Under Pointer"
     /// Long enough to register, short enough that the icon is back to normal before the
     /// user looks up from the app they pasted into (PLAN D-5).
     private static let flashDuration = Duration.milliseconds(800)
@@ -34,18 +36,38 @@ final class AppCoordinator: NSObject {
     private let capture: any ScreenCapturing
     private let delivery: any SnapshotDelivering
     private let hotkey: GlobalHotkeyManager
+    private let settings: SettingsStore
 
     /// Internal, not private, so the tests can assert on what the capture flow produced.
     private(set) var activeWindowController: AnnotationWindowController?
     /// Doubles as the in-flight flag: a capture request is ignored while this is non-nil,
     /// and the tests await it to know the flow has finished.
     private(set) var captureTask: Task<Void, Never>?
+    /// Every shortcut handed to `GlobalHotkeyManager`, in order. Internal so the tests can
+    /// assert on the coordinator's decision — which shortcut, and how many times — rather
+    /// than on Carbon's registration result, which any other running application can change
+    /// from one run to the next.
+    private(set) var registeredShortcuts: [HotkeyShortcut] = []
+
+    /// Internal, not private, so the tests can assert on the two rows whose text is the only
+    /// thing that tells the user a shortcut is not working.
+    private(set) var captureItem: NSMenuItem?
+    private(set) var hotkeyItem: NSMenuItem?
+
+    /// Built on first request and reused, never rebuilt. Internal so the tests can prove that
+    /// the menu item and ⌘, reach the same instance.
+    private(set) var settingsWindowController: SettingsWindowController?
 
     private var statusItem: NSStatusItem?
     private var messageItem: NSMenuItem?
-    private var hotkeyItem: NSMenuItem?
     private var permissionItem: NSMenuItem?
     private var flashTask: Task<Void, Never>?
+    private var hotkeyCancellable: AnyCancellable?
+    private var statusCancellable: AnyCancellable?
+    private var settingsObserver: (any NSObjectProtocol)?
+    /// Set only while `apply(_:)` is writing a reverted shortcut back into the store. See
+    /// `revertStoredShortcut(to:)`.
+    private var isRevertingStoredShortcut = false
 
     override convenience init() {
         let permission = ScreenCapturePermission()
@@ -53,7 +75,8 @@ final class AppCoordinator: NSObject {
             permission: permission,
             capture: ScreenCaptureService(permission: permission),
             delivery: DeliveryService(),
-            hotkey: GlobalHotkeyManager()
+            hotkey: GlobalHotkeyManager(),
+            settings: SettingsStore()
         )
     }
 
@@ -61,12 +84,14 @@ final class AppCoordinator: NSObject {
         permission: any ScreenCapturePermissionProviding,
         capture: any ScreenCapturing,
         delivery: any SnapshotDelivering,
-        hotkey: GlobalHotkeyManager
+        hotkey: GlobalHotkeyManager,
+        settings: SettingsStore
     ) {
         self.permission = permission
         self.capture = capture
         self.delivery = delivery
         self.hotkey = hotkey
+        self.settings = settings
         super.init()
     }
 
@@ -75,15 +100,57 @@ final class AppCoordinator: NSObject {
         configureMenuBar()
 
         hotkey.onTrigger = { [weak self] in self?.requestCapture() }
+        // The user's stored choice, not the built-in default: the whole point of the setting
+        // is that ⌃⌥⌘4 was not reachable one-handed.
+        //
         // A failed registration must not disable the app: the menu item stays a working
         // trigger and the menu says why the shortcut is not responding.
-        let status = hotkey.register(.captureDefault)
-        updateHotkeyItem(for: status)
+        apply(settings.hotkey)
+
+        // dropFirst: `apply` above has already registered the current value. removeDuplicates:
+        // re-selecting the shortcut that is already in force must not tear down a working
+        // registration and re-make it.
+        hotkeyCancellable = settings.$hotkey
+            .dropFirst()
+            .removeDuplicates()
+            .sink { [weak self] shortcut in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // The one value that must not be acted on: the coordinator's own write-back
+                    // of a shortcut the manager already reverted to. See `revertStoredShortcut`.
+                    guard !self.isRevertingStoredShortcut else { return }
+                    self.apply(shortcut)
+                }
+            }
+        // The status is no longer written once at launch — every shortcut change rewrites it —
+        // so the menu row follows the publisher instead of a single return value. The sink
+        // fires immediately with the current status, which is what registration just produced.
+        statusCancellable = hotkey.$status
+            .sink { [weak self] status in
+                MainActor.assumeIsolated { self?.updateHotkeyItem(for: status) }
+            }
+        // ⌘, and the app menu's Settings item, routed here by `MacPictApp` so they open the real
+        // window instead of the placeholder SwiftUI `Settings` scene.
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .macPictOpenSettings,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openSettingsWindow() }
+        }
         AppLogger.app.info("MacPict started")
     }
 
     func stop() {
+        // Cancelled before teardown so no late change can write into a dismantled menu.
+        hotkeyCancellable = nil
+        statusCancellable = nil
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
+        settingsObserver = nil
         hotkey.unregister()
+        registeredShortcuts.removeAll()
         flashTask?.cancel()
         flashTask = nil
         closeActiveWindow()
@@ -92,8 +159,55 @@ final class AppCoordinator: NSObject {
         }
         statusItem = nil
         messageItem = nil
+        captureItem = nil
         hotkeyItem = nil
         permissionItem = nil
+    }
+
+    /// The single place a shortcut reaches the hotkey manager, so the menu, the record of what
+    /// was asked for and the stored selection cannot drift from what was registered.
+    ///
+    /// When a chosen shortcut fails, `GlobalHotkeyManager` reverts to the last one that did
+    /// register, and the stored selection has to follow it. Otherwise the dead shortcut stays
+    /// persisted, and the *next* launch — a fresh process, with no last-good shortcut to fall
+    /// back on — comes up with no working hotkey at all. `status` still reports the failure of
+    /// the shortcut the user picked, so they learn their choice did not take.
+    private func apply(_ shortcut: HotkeyShortcut) {
+        registeredShortcuts.append(shortcut)
+        let status = hotkey.register(shortcut)
+        // Read after `register` has returned rather than trusting the `$status` sink: inside
+        // that sink the manager has not necessarily settled `activeShortcut` yet.
+        let live = hotkey.activeShortcut
+        updateHotkeyItem(for: status)
+        updateCaptureItem(for: live)
+
+        guard !status.isRegistered, let live, live != shortcut else { return }
+        revertStoredShortcut(to: live)
+    }
+
+    /// Two hazards, both of them invisible at the call site.
+    ///
+    /// **The write has to wait a turn.** `@Published` publishes from `willSet`, so when this runs
+    /// from the `$hotkey` sink it is running *inside* the store's own assignment: a write here
+    /// would be flattened the instant that assignment completed, and `SettingsStore.didSet` would
+    /// go on to persist the dead shortcut. The write-back is therefore hopped onto the next turn
+    /// of the main actor, by which time the store has settled and this is an ordinary assignment.
+    ///
+    /// **The write re-enters.** That assignment publishes in turn, and `removeDuplicates()` cannot
+    /// absorb it — the reverted shortcut genuinely differs from the one that just failed — so the
+    /// sink would register it all over again. `isRevertingStoredShortcut` is what stops that; it
+    /// is set here and nowhere else, and it brackets exactly the one assignment, which is
+    /// synchronous with the sink it has to suppress.
+    private func revertStoredShortcut(to shortcut: HotkeyShortcut) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isRevertingStoredShortcut = true
+            defer { self.isRevertingStoredShortcut = false }
+            self.settings.hotkey = shortcut
+            AppLogger.hotkey.info(
+                "Stored selection reverted to \(shortcut.displayString, privacy: .public), the shortcut still registered"
+            )
+        }
     }
 
     /// The single capture entry point, shared by the global hotkey and the menu item.
@@ -227,14 +341,14 @@ final class AppCoordinator: NSObject {
         menu.autoenablesItems = false
         menu.delegate = self
 
-        let captureItem = NSMenuItem(
-            title: "Capture Display Under Pointer",
-            action: #selector(requestCapture),
-            keyEquivalent: "4"
-        )
-        captureItem.keyEquivalentModifierMask = [.control, .option, .command]
-        captureItem.target = self
-        menu.addItem(captureItem)
+        // No key equivalent: the shortcut is a Carbon global hotkey, and any key equivalent set
+        // here would be AppKit's own, handled separately and only while the menu is in the
+        // responder chain. Several of the offered shortcuts (the bare function keys) have no
+        // honest key-equivalent spelling at all. So the shortcut is written into the title,
+        // where it describes the hotkey that is actually in force rather than imitating it.
+        let captureRow = NSMenuItem(title: Self.captureTitle, action: #selector(requestCapture), keyEquivalent: "")
+        captureRow.target = self
+        menu.addItem(captureRow)
         menu.addItem(.separator())
 
         // Hidden until something goes wrong: an error the user cannot see is an error they
@@ -253,13 +367,17 @@ final class AppCoordinator: NSObject {
         permissionStatus.isEnabled = false
         menu.addItem(permissionStatus)
 
-        let settings = NSMenuItem(
+        let screenRecording = NSMenuItem(
             title: "Open Screen Recording Settings…",
             action: #selector(openScreenRecordingSettings),
             keyEquivalent: ""
         )
-        settings.target = self
-        menu.addItem(settings)
+        screenRecording.target = self
+        menu.addItem(screenRecording)
+
+        let appSettings = NSMenuItem(title: "Settings…", action: #selector(openSettingsWindow), keyEquivalent: "")
+        appSettings.target = self
+        menu.addItem(appSettings)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit MacPict", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -268,17 +386,45 @@ final class AppCoordinator: NSObject {
         statusItem.menu = menu
         self.statusItem = statusItem
         messageItem = message
+        captureItem = captureRow
         hotkeyItem = hotkeyStatus
         permissionItem = permissionStatus
+        updateCaptureItem(for: hotkey.activeShortcut)
         refreshPermissionItem()
     }
 
-    private func updateHotkeyItem(for status: HotkeyRegistrationStatus) {
-        guard case let .failed(code) = status else {
+    /// The title names the shortcut that is actually registered, not the one that was chosen —
+    /// promising a combination that no longer works would contradict the status row directly
+    /// below it. When nothing is registered the title names no shortcut at all.
+    private func updateCaptureItem(for shortcut: HotkeyShortcut?) {
+        guard let shortcut else {
+            captureItem?.title = Self.captureTitle
+            return
+        }
+        captureItem?.title = "\(Self.captureTitle) (\(shortcut.displayString))"
+    }
+
+    /// Internal, not private, so the tests can drive a status the app cannot be made to produce
+    /// on demand: a conflict depends on what other applications on the machine already own.
+    ///
+    /// Every non-registered case is shown, `.conflict` above all — picking a combination another
+    /// app already holds is now the likeliest way for this to go wrong, and the user has to be
+    /// told rather than left with a shortcut that silently does nothing. The text comes from the
+    /// status itself, which names the shortcut that failed instead of assuming the default.
+    ///
+    /// `status` alone is not the whole truth: a failed change usually leaves the previous
+    /// shortcut still registered, which is a very different situation from having no shortcut at
+    /// all, so the row says which of the two it is.
+    func updateHotkeyItem(for status: HotkeyRegistrationStatus) {
+        guard !status.isRegistered else {
             hotkeyItem?.isHidden = true
             return
         }
-        hotkeyItem?.title = "\(HotkeyShortcut.captureDefault.displayString) is unavailable (error \(code))"
+        if let live = hotkey.activeShortcut {
+            hotkeyItem?.title = "\(status.displayText) — still using \(live.displayString)"
+        } else {
+            hotkeyItem?.title = "\(status.displayText) — no capture shortcut is active"
+        }
         hotkeyItem?.isHidden = false
     }
 
@@ -301,6 +447,19 @@ final class AppCoordinator: NSObject {
 
     @objc private func openScreenRecordingSettings() {
         permission.openSettings()
+    }
+
+    /// Built on first use and retained: rebuilding it would discard the window's position and
+    /// leave the previous one orphaned on screen. Shared by the status menu item and by ⌘,.
+    @objc private func openSettingsWindow() {
+        let controller = settingsWindowController ?? SettingsWindowController(settings: settings, hotkey: hotkey)
+        settingsWindowController = controller
+        // PLAN R-6, for the same reason the annotation window is not presented under test:
+        // `show()` activates the app and takes key focus, which would pull the developer out of
+        // whatever they are doing mid-run. The controller is still built and retained, so the
+        // routing this method exists for is exercised.
+        guard !Self.suppressesWindowPresentation else { return }
+        controller.show()
     }
 }
 

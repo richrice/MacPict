@@ -15,10 +15,6 @@ enum AnnotationRenderer {
     /// Half-angle between the shaft and each barb.
     static let arrowHeadAngle: CGFloat = .pi / 7
 
-    /// Outline thickness for text. AppKit reads `.strokeWidth` as a percentage of the font
-    /// size, so the outline scales with `scale` for free — see `textAttributes`.
-    private static let textOutlinePercent: CGFloat = 8.0
-
     /// - Parameter scale: multiply image-pixel geometry by this to reach context units.
     ///   1.0 for the export bitmap; `1 / geometry.imageScale` for the canvas.
     static func draw(_ annotations: [Annotation], in context: NSGraphicsContext, scale: CGFloat) {
@@ -60,17 +56,14 @@ enum AnnotationRenderer {
         NSFont.systemFont(ofSize: style.fontSize * scale, weight: .semibold)
     }
 
-    /// A screenshot can be any colour underneath the text, so the glyphs carry a
-    /// contrasting outline: a negative `.strokeWidth` means fill *and* stroke, and AppKit
-    /// expresses it as a percentage of the font size. That makes the outline scale exactly
-    /// with `scale`, so the canvas preview and the export agree by construction — a shadow
-    /// would need its blur radius scaled by hand and would smear at preview scales.
+    /// Fill only, in `style.color`, with no stroke. An earlier version added a contrasting
+    /// outline here; it was removed because the live `NSTextField` editor draws plain filled
+    /// glyphs, so the outline appeared only once the text was committed and changed what the
+    /// user had just composed. The editor is the preview, so the render must match it exactly.
     static func textAttributes(for style: AnnotationStyle, scale: CGFloat) -> [NSAttributedString.Key: Any] {
         [
             .font: font(for: style, scale: scale),
-            .foregroundColor: style.color.nsColor,
-            .strokeColor: outlineColor(for: style.color),
-            .strokeWidth: -textOutlinePercent
+            .foregroundColor: style.color.nsColor
         ]
     }
 
@@ -125,15 +118,6 @@ enum AnnotationRenderer {
         path.lineJoinStyle = .round
         style.color.nsColor.setStroke()
         path.stroke()
-    }
-
-    /// `AnnotationColor.nsColor` is always built in sRGB, so the components read directly.
-    private static func outlineColor(for color: AnnotationColor) -> NSColor {
-        let nsColor = color.nsColor
-        let luminance = 0.2126 * nsColor.redComponent
-            + 0.7152 * nsColor.greenComponent
-            + 0.0722 * nsColor.blueComponent
-        return luminance > 0.5 ? .black : .white
     }
 
     private static func scaled(_ point: CGPoint, _ scale: CGFloat) -> CGPoint {

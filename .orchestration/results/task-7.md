@@ -524,3 +524,438 @@ invocation died with `Unable to initialize test bundle … MacPictTests.xctest`,
 against a concurrent worker's build writing the same `DerivedData`. Re-running it immediately
 gave exit 0. Worth knowing if the review sees it: it is a parallel-build artefact, not a code
 defect.
+
+---
+
+# Feature — configurable capture hotkey wiring
+
+Applied. Ownership unchanged: `MacPict/AppCoordinator.swift` and
+`MacPictTests/CoordinatorTests.swift` only. `MacPictApp.swift`, `SettingsStore.swift`,
+`GlobalHotkeyManager.swift` and `SettingsView.swift` were **not** touched;
+`override convenience init()` still resolves and `AppDelegate` compiles unchanged, verified by
+`./scripts/build.sh` exiting 0.
+
+## The three reported defects, closed
+
+1. **`start()` ignored the stored choice.** `hotkey.register(.captureDefault)` is gone.
+   `start()` now calls `apply(settings.hotkey)`.
+2. **`updateHotkeyItem(for:)` matched only `.failed`, so a `.conflict` displayed nothing.**
+   It now hides the row only when the status `isRegistered`; `.conflict`, `.failed` and
+   `.notRegistered` are all shown.
+3. **The row hardcoded `HotkeyShortcut.captureDefault.displayString`.** It now uses
+   `status.displayText`, which names the shortcut that actually failed.
+
+## What changed in `AppCoordinator.swift`
+
+**Ownership.** `private let settings: SettingsStore` added; the injection initialiser gained a
+trailing `settings: SettingsStore` parameter and `override convenience init()` constructs
+`SettingsStore()`. `private var settingsWindowController: SettingsWindowController?` is built on
+first open and retained:
+
+```swift
+@objc private func openSettingsWindow() {
+    let controller = settingsWindowController ?? SettingsWindowController(settings: settings, hotkey: hotkey)
+    settingsWindowController = controller
+    controller.show()
+}
+```
+
+It is deliberately **not** cleared in `stop()`: dropping the last reference to a controller whose
+window may still be on screen (`isReleasedWhenClosed = false`, so the controller is the only
+owner) would deallocate a visible window.
+
+**One funnel for shortcut changes.** Every path to the hotkey manager goes through:
+
+```swift
+private func apply(_ shortcut: HotkeyShortcut) {
+    registeredShortcuts.append(shortcut)
+    hotkey.register(shortcut)
+    updateCaptureItem(for: shortcut)
+}
+```
+
+so the menu title, the record of what was asked for, and the registration cannot drift apart.
+
+## The Combine subscriptions and their teardown
+
+Two `AnyCancellable`s, both established in `start()` after `apply(settings.hotkey)` has already
+registered the current value, matching MacDictate's `AppCoordinator.swift:127-134`:
+
+```swift
+hotkeyCancellable = settings.$hotkey
+    .dropFirst()
+    .removeDuplicates()
+    .sink { [weak self] shortcut in
+        MainActor.assumeIsolated { self?.apply(shortcut) }
+    }
+statusCancellable = hotkey.$status
+    .sink { [weak self] status in
+        MainActor.assumeIsolated { self?.updateHotkeyItem(for: status) }
+    }
+```
+
+- `.dropFirst()` — `@Published` replays the current value on subscribe, and `apply` above has
+  already registered it; without this, launch would register twice.
+- `.removeDuplicates()` — re-selecting the shortcut already in force would otherwise unregister a
+  working Carbon hotkey and re-register it for no reason.
+- `hotkey.$status` is **not** dropped: its immediate replay is the launch status, which is exactly
+  what the menu row should show. The status is no longer written once at launch — every
+  re-registration rewrites it — so the row follows the publisher instead of a return value.
+- Teardown: `stop()` sets both cancellables to `nil` **first**, before `hotkey.unregister()` and
+  before the menu is dismantled, so the `.notRegistered` that `unregister()` publishes cannot
+  write into a half-torn-down menu. `registeredShortcuts` is also cleared there.
+
+Delivery is synchronous: `@Published` fires from `willSet` on the main actor, so a test can assert
+immediately after assigning `settings.hotkey`. `MainActor.assumeIsolated` is sound for the same
+reason — both publishers are only ever mutated on the main actor.
+
+## How the capture item presents the shortcut, and why that way
+
+Title text, **not** a key equivalent. The item is now built with `keyEquivalent: ""` and no
+modifier mask, and its title is rewritten by `updateCaptureItem(for:)` to
+`"Capture Display Under Pointer (⌃⌥ C)"` — from `settings.hotkey.displayString` — at menu
+construction and on every change.
+
+The old code set `keyEquivalent: "4"` with `[.control, .option, .command]`. Reproducing that for
+an arbitrary chosen shortcut would be a lie: an `NSMenuItem` key equivalent is AppKit's own
+mechanism, handled by AppKit independently of the Carbon registration, so a shortcut that failed
+to register would still appear to be a live accelerator; and seven of the twenty-one presets are
+bare function keys (F13-F19), which have no honest key-equivalent character at all. The title is
+descriptive and cannot be mistaken for a second, separately-handled binding.
+
+## The Settings… item
+
+Added between "Open Screen Recording Settings…" and the separator that precedes Quit, with
+`keyEquivalent: ""` — no `⌘,` handler, which would need `MacPictApp.swift`. Menu order is now:
+capture / separator / error row / hotkey-status row / permission row / Open Screen Recording
+Settings… / **Settings…** / separator / Quit.
+
+## Preserved from the earlier repairs (re-verified by the existing tests, unchanged)
+
+- Single-flight capture guard (`testASecondRequestWhileACaptureIsInFlightIsIgnored`).
+- The permission gate running unconditionally in the real flow (`permission.requestCount`
+  assertions).
+- Replacement-capture ordering — `closeActiveWindow()` still happens only after the new
+  `AnnotationWindowController` exists (`testCaptureFailureLeavesAnAlreadyOpenSnapshotAndItsAnnotationsIntact`,
+  `testPermissionDenialOnALaterCaptureLeavesAnOpenSnapshotIntact`,
+  `testSuccessfulReplacementClosesThePreviousWindowExactlyOnce`). `performCapture()` was not
+  touched by this change at all.
+
+No existing assertion was weakened, deleted or reordered.
+
+## Not asserting on Carbon, as instructed
+
+`GlobalHotkeyManager` is `final` and pinned in the initialiser, so it cannot be faked or
+subclassed; the six new tests call `start()`, which does perform a real `RegisterEventHotKey`.
+What they **assert** on is the coordinator's decision, not Carbon's answer: whether a given
+combination registers depends on what else is running on the machine (another app owning F19, or
+the user's own MacPict already holding ⌃⌥ C), so `hotkey.status` is not a stable oracle. Two
+internal seams make the decision observable:
+
+```swift
+/// Every shortcut handed to `GlobalHotkeyManager`, in order.
+private(set) var registeredShortcuts: [HotkeyShortcut] = []
+private(set) var captureItem: NSMenuItem?
+private(set) var hotkeyItem: NSMenuItem?
+func updateHotkeyItem(for status: HotkeyRegistrationStatus)   // was private
+```
+
+`registeredShortcuts` is an ordered list rather than a single value precisely so `.dropFirst()`
+and `.removeDuplicates()` are falsifiable — a redundant re-registration shows up as an extra
+element. `updateHotkeyItem(for:)` became internal because a `.conflict` cannot be produced on
+demand; driving it directly is the only deterministic way to assert the message the user sees.
+`registeredShortcuts` is cleared in `stop()`, so it is not an unbounded launch-to-quit log.
+
+## New tests (`MacPictTests/CoordinatorTests.swift`, 6 added → 19 in the class)
+
+The fixture now builds `SettingsStore(defaults:)` on a suite-named `UserDefaults`,
+`"com.macpict.tests.CoordinatorTests"`, whose persistent domain is removed in both `setUp` and
+`tearDown`. `.standard` is never referenced by this suite. Shortcuts come from
+`HotkeyShortcut.presetGroups` via a `preset(_:)` lookup, so a test cannot assert against a
+combination the settings window would not offer.
+
+| Test | Proves |
+|---|---|
+| `testStartRegistersTheStoredShortcutRatherThanTheBuiltInDefault` | store holds F19 → `registeredShortcuts == [F19]` (exactly one registration, and not `.captureDefault`); capture title reads `Capture Display Under Pointer (F19)` |
+| `testChangingTheStoredShortcutReRegistersWithTheNewOne` | assigning F18 appends it → `[⌃⌥ C, F18]`, title follows; re-assigning F18 leaves the list at two — `.removeDuplicates()` |
+| `testAConflictIsShownInTheMenuWithTheShortcutThatFailed` | `.conflict("⌃⌥ C")` → row visible with the exact text `"Shortcut conflict: ⌃⌥ C is already in use"`; `.registered` hides it again |
+| `testNotRegisteredIsAlsoShownRatherThanLeavingTheRowBlank` | `.notRegistered` → visible, `"Not registered"` |
+| `testTheCaptureMenuItemStillCapturesWhileTheHotkeyIsInAFailedState` | with the row showing `"Registration failed: Carbon error -50"`, firing the item's own target/action (`perform(item.action)`, not `requestCapture()` directly) still yields `capture.callCount == 1` and a live window |
+| `testTheMenuOffersSettingsAboveTheQuitSeparator` | a `Settings…` item exists before Quit, is followed by the separator, and has an empty key equivalent (no `⌘,`) |
+
+These six are the only tests in the suite that call `start()`; the status item they install is
+removed by `stop()` in `tearDown`.
+
+### Falsification — the new tests are load-bearing
+
+Both original defects were temporarily reintroduced together (`apply(.captureDefault)`, and
+`updateHotkeyItem` restored to `guard case let .failed(code)` with the hardcoded default string),
+and `-only-testing:MacPictTests/CoordinatorTests` run:
+
+```
+Executed 19 tests, with 7 failures (0 unexpected)
+  testStartRegistersTheStoredShortcutRatherThanTheBuiltInDefault      failed
+  testAConflictIsShownInTheMenuWithTheShortcutThatFailed              failed
+  testNotRegisteredIsAlsoShownRatherThanLeavingTheRowBlank            failed
+  testTheCaptureMenuItemStillCapturesWhileTheHotkeyIsInAFailedState   failed
+```
+
+Exactly the four tests aimed at those defects, and nothing else. The temporary lines were then
+reverted from a saved copy; `grep -c "TEMPORARY-FALSIFICATION" MacPict/AppCoordinator.swift` → 0.
+(`testChangingTheStoredShortcutReRegistersWithTheNewOne` correctly stayed green: the subscription
+was not part of the reintroduced defect, and the falsified value coincided with the default.)
+
+## Validation (final, real output, from `/Users/rich/Repos/MacPict`)
+
+| Command | Exit code | Result |
+|---|---|---|
+| `./scripts/bootstrap.sh` | 0 | project regenerated |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **` |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **Executed 146 tests, with 0 failures (0 unexpected)** |
+
+146 distinct tests across twelve suites; `CoordinatorTests` contributes 19 (13 previous + 6 new).
+`grep -E "warning:"` over both logs, excluding the `appintentsmetadataprocessor` tool note →
+no output, so zero Swift warnings.
+
+### Red gates seen on the way, all from Task 5's concurrent work
+
+Four earlier full-suite runs failed with 3, then 3, then 3, then 2 failures, always in
+`MacPictTests/AnnotationWindowControllerTests.swift`
+(`testCommittedTextLandsWhereTheEditorDrewIt`,
+`testTextEditLiveAcrossACropCommitsAtTheSizeTheEditorWasShowing`,
+`testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing`) — text-annotation pixel
+assertions such as `failed - no annotation-coloured pixels were drawn at all`. That file does not
+mention `AppCoordinator` at all (`grep -c AppCoordinator` → 0), and `CoordinatorTests` passed
+19/19 in every one of those runs. I waited and re-ran rather than touching anything; the count
+fell 3 → 2 → 0 as Task 5's edits to `AnnotationCanvasView.swift` landed. The final run above was
+made against their settled state.
+
+`SettingsWindowController` was already present in `MacPict/SettingsView.swift` when I started, so
+no retry loop for Task 8 was needed.
+
+## Plan gaps and unowned-caller breakage
+
+None. No caller in a file I do not own was broken: `MacPictApp.swift` only uses
+`AppCoordinator()` / `start()` / `stop()`, all unchanged.
+
+One observation, not a defect and not fixed (it is outside my ownership): `MacPictApp.swift`
+still declares a `Settings { EmptyView() }` scene, so macOS puts a `⌘,` "Settings…" item in the
+application menu that opens an empty window. Now that a real settings window exists, that stock
+item is misleading — but pointing it at `SettingsWindowController` needs `MacPictApp.swift`,
+which PLAN §8 and this task both put out of bounds. Flagging it for the lead.
+
+## Remaining uncertainties
+
+- **Carbon registration is exercised but not asserted.** `start()` in the six new tests performs
+  a real `RegisterEventHotKey` for whatever shortcut the test stored (F19/F18/⌃⌥ C), unregistered
+  again by `stop()` in `tearDown`. `GlobalHotkeyManager` is `final` and pinned into the
+  initialiser, so there is no seam to avoid this without changing a file I do not own. The
+  consequence is bounded: pressing F18/F19 during a test run could fire a capture. If the lead
+  wants that gone, the one-line change is a `HotkeyRegistering` protocol on the injected
+  parameter, mirroring what was already done for `ScreenCapturePermissionProviding`.
+- **`GlobalHotkeyManager.register`'s revert-to-last-good behaviour is invisible to the
+  coordinator.** When a new shortcut fails, the manager silently restores the previous one, but
+  `status` — and therefore the menu row and `SettingsView` — reports the failure of the shortcut
+  the user picked, with no indication that the *old* one is still live. The user sees "Shortcut
+  conflict: X is already in use" and is not told that Y still works. That is Task 2's design and
+  its file; I implemented against it faithfully rather than papering over it in the menu text.
+- **Not verified by me:** the settings window actually appearing and the picker driving a
+  re-registration end to end (opening it calls `NSApp.activate`, which would seize focus mid-run,
+  so no test opens it); the hotkey firing from another frontmost application; and the on-screen
+  appearance of the new capture-item title. I did not launch the app, as instructed.
+
+---
+
+# Follow-up — persisted-conflict recovery and ⌘, routing
+
+Both items applied. Ownership unchanged: `MacPict/AppCoordinator.swift` and
+`MacPictTests/CoordinatorTests.swift` only. `MacPictApp.swift`, `GlobalHotkeyManager.swift`,
+`SettingsStore.swift` and `SettingsView.swift` were not touched; `.macPictOpenSettings` and
+`activeShortcut` had both landed by the time I built, so no retry loop was needed.
+
+## Item 1 — the write-back, and the bug it exposed on the way
+
+`apply(_:)` now reads what is really live and pulls the stored selection back to it:
+
+```swift
+private func apply(_ shortcut: HotkeyShortcut) {
+    registeredShortcuts.append(shortcut)
+    let status = hotkey.register(shortcut)
+    let live = hotkey.activeShortcut
+    updateHotkeyItem(for: status)
+    updateCaptureItem(for: live)
+
+    guard !status.isRegistered, let live, live != shortcut else { return }
+    revertStoredShortcut(to: live)
+}
+```
+
+`status` is still the *attempted* shortcut's outcome, so the user is still told their pick did not
+take. `live` is read after `register(_:)` returns rather than inside the `$status` sink: Task 2's
+`register` does settle `activeShortcut` before it publishes `status`, but relying on that ordering
+from another file is the kind of coupling that breaks silently.
+
+### The first attempt was wrong, and the test caught it
+
+My first version wrote `settings.hotkey` synchronously inside the sink. It failed
+`testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive` with the store still holding the
+dead shortcut, and the reason is worth recording: **`@Published` publishes from `willSet`**. The
+sink therefore runs *inside* the store's own assignment, so a write from the sink is flattened the
+instant that assignment completes — and `SettingsStore.hotkey`'s `didSet { persistHotkey() }` then
+writes the dead shortcut to disk. A synchronous write-back cannot work at all; it is not a matter
+of ordering luck.
+
+### The re-entrancy guard
+
+```swift
+private func revertStoredShortcut(to shortcut: HotkeyShortcut) {
+    Task { @MainActor [weak self] in
+        guard let self else { return }
+        self.isRevertingStoredShortcut = true
+        defer { self.isRevertingStoredShortcut = false }
+        self.settings.hotkey = shortcut
+        AppLogger.hotkey.info("Stored selection reverted to …")
+    }
+}
+```
+
+and in the sink:
+
+```swift
+// The one value that must not be acted on: the coordinator's own write-back
+// of a shortcut the manager already reverted to. See `revertStoredShortcut`.
+guard !self.isRevertingStoredShortcut else { return }
+```
+
+- The hop onto the next turn of the main actor is what makes the write stick, per the `willSet`
+  problem above.
+- The flag brackets **exactly one assignment**, and that assignment's sink delivery is synchronous
+  with it, so the flag is true for precisely the callback it has to suppress and false everywhere
+  else. It is set in this one method and read in one place.
+- `removeDuplicates()` cannot do this job — the reverted shortcut genuinely differs from the one
+  that just failed, so the sink would register it again. Mutation B below shows exactly that.
+- `dropFirst()` / `removeDuplicates()` semantics are otherwise unchanged.
+
+Cost, stated plainly: between the failed registration and the next main-actor turn the store still
+holds the dead shortcut, so a hard kill inside that window would persist it. It is microseconds on
+the main actor and there is no way to close it from my side — the fix would be for
+`SettingsStore.hotkey` to publish from `didSet` instead.
+
+## What happens when nothing is live
+
+`activeShortcut == nil` — the fresh-launch conflict, where there is nothing to revert *to*:
+
+- **The selection is left alone.** `guard … let live` simply does not fire, so the user's own
+  choice stays in the picker where they can see and change it.
+- **The menu says so outright.** The status row now appends the live state, because `status` alone
+  cannot distinguish "your change failed but the old shortcut still works" from "you have no
+  shortcut at all":
+  - something live → `"Shortcut conflict: F18 is already in use — still using ⌃⌥ C"`
+  - nothing live → `"Shortcut conflict: F17 is already in use — no capture shortcut is active"`
+- **The capture item promises nothing.** `updateCaptureItem(for:)` now takes `HotkeyShortcut?` and
+  is driven by `activeShortcut`, so with nothing registered the title is a bare
+  `"Capture Display Under Pointer"`. Naming a shortcut there while the row two lines below says it
+  is unavailable would have been a direct contradiction.
+- **The menu item still captures**, which is what makes the state survivable — covered by a test.
+
+## Item 2 — ⌘, routing
+
+`start()` observes `.macPictOpenSettings` (declared by Task 1 in `MacPictApp.swift`; I did not
+declare it) and routes it into the same `openSettingsWindow()` the status-menu item uses, so both
+reach the one retained `SettingsWindowController`. `stop()` removes the observer alongside the two
+cancellables, before the rest of the teardown.
+
+`openSettingsWindow()` gained the `Self.suppressesWindowPresentation` guard already used for the
+annotation window (PLAN R-6): the controller is still built and retained under test — which is the
+routing the tests care about — but `show()`, which calls `NSApp.activate` and takes key focus, is
+skipped so a test run cannot seize the developer's screen.
+
+## New tests (5 added → 24 in `CoordinatorTests`)
+
+Deterministic failure on demand comes from a `block(_:)` helper that occupies a shortcut with a
+second `GlobalHotkeyManager`. I verified the premise with a standalone Carbon probe before relying
+on it: a second `RegisterEventHotKey` for the same combination **in the same process** returns
+`eventHotKeyExistsErr` (-9878) whether or not the `EventHotKeyID` matches, while a bogus key code
+(`0xFFFF`) registers successfully — so duplicate registration is the only way to force a failure.
+Assertions remain on the coordinator's decisions (`registeredShortcuts` ordering, `settings.hotkey`,
+the persisted value, the menu text), never on whether Carbon happened to accept something.
+
+| Test | Proves |
+|---|---|
+| `testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive` | F18 blocked, then selected: `registeredShortcuts == [⌃⌥ C, F18]` (asked once, no recursion), `settings.hotkey == ⌃⌥ C`, **and a freshly constructed `SettingsStore` on the same defaults also reads ⌃⌥ C** — i.e. the next launch cannot inherit the dead choice; row reads `"… — still using ⌃⌥ C"`; title reads `(⌃⌥ C)` |
+| `testAConflictWithNothingLiveKeepsTheSelectionAndSaysNoShortcutIsActive` | F17 blocked and pre-loaded into the store: selection *and* persisted value stay F17, `activeShortcut == nil`, row reads `"… — no capture shortcut is active"`, title names no shortcut |
+| `testTheCaptureMenuItemStillCapturesWhenNoShortcutCouldBeRegistered` | with nothing registered, the item's own target/action still produces `capture.callCount == 1` and a live window |
+| `testTheOpenSettingsNotificationOpensTheSameWindowControllerAsTheMenuItem` | controller is nil before; posting `.macPictOpenSettings` builds it; firing the menu item afterwards yields the **same instance** (`===`) |
+| `testTheOpenSettingsNotificationIsIgnoredAfterStop` | after `stop()`, a post builds nothing — the observer really is removed |
+
+The persisted-value assertion goes through `SettingsStore(defaults:)` rather than a hand-decoded
+`UserDefaults` key, so it exercises the production read path and does not hard-code Task 2's key
+name. The suite-named defaults (`com.macpict.tests.CoordinatorTests`) are unchanged; `.standard` is
+still never touched by this suite.
+
+### Existing assertions that had to change, and why that is not a weakening
+
+Three tests asserted the status row's old text, which the new live-state clause extends. Each was
+updated to the new **exact** string, not relaxed:
+
+- `testAConflictIsShownInTheMenuWithTheShortcutThatFailed` → `"Shortcut conflict: F13 is already
+  in use — still using ⌃⌥ C"`. The synthetic status was changed from `.conflict("⌃⌥ C")` to
+  `.conflict("F13")` because with the live shortcut also being ⌃⌥ C the message read "conflict:
+  ⌃⌥ C … still using ⌃⌥ C", which is nonsense to enshrine in a test.
+- `testNotRegisteredIsAlsoShownRatherThanLeavingTheRowBlank` → rebuilt on a nothing-live fixture
+  (F15 blocked) so `.notRegistered` produces the coherent `"Not registered — no capture shortcut
+  is active"` instead of claiming a shortcut was simultaneously live and not registered.
+- `testTheCaptureMenuItemStillCapturesWhileTheHotkeyIsInAFailedState` → `"Registration failed:
+  Carbon error -50 — still using ⌃⌥ C"`.
+
+Two assertions were **added**, not removed: `XCTAssertEqual(hotkeyManager.activeShortcut, chosen)`
+in the two tests that assert the capture-item title. The title now follows `activeShortcut`, so on
+a machine where F19/F18 is already owned by something else those tests fail — and they now fail on
+a line that names the cause rather than looking like a title bug. That is the one environment
+dependence I introduced; it is the price of the title telling the truth.
+
+## Mutation checks (each mutation applied alone, `-only-testing:MacPictTests/CoordinatorTests`)
+
+| Mutation | Result |
+|---|---|
+| A — `revertStoredShortcut(to:)` call removed | exit 65, **`testAFailedShortcutIsNotLeftPersistedWhileAnotherIsStillLive` fails** (store and persisted value stay F18) |
+| B — re-entrancy guard removed from the sink | exit 65, same test fails with `registeredShortcuts == [⌃⌥ C, F18, ⌃⌥ C]` — the write-back came straight back round as a second registration, exactly the loop the flag exists to stop |
+| C — `.macPictOpenSettings` observer removed from `start()` | exit 65, **`testTheOpenSettingsNotificationOpensTheSameWindowControllerAsTheMenuItem` fails** |
+| D — observer removal dropped from `stop()` | exit 65, **`testTheOpenSettingsNotificationIsIgnoredAfterStop` fails** |
+
+No mutation failed a test other than the one aimed at it. All were reverted from a saved copy;
+`grep -c MUTATION MacPict/AppCoordinator.swift` → 0 before the final gate.
+
+## Validation (final, real output)
+
+| Command | Exit code | Result |
+|---|---|---|
+| `./scripts/bootstrap.sh` | 0 | project regenerated |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **` |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **Executed 153 tests, with 0 failures (0 unexpected)** |
+
+153 distinct tests, `CoordinatorTests` 24 of them (19 → 24). No failures anywhere in the suite this
+time — Task 5's three text-annotation tests are green again. `grep -E "warning:"` over both logs,
+excluding the `appintentsmetadataprocessor` tool note → no output.
+
+## One thing I did wrong, and put back
+
+Checking whether the tests leak into real preferences, I found
+`"NSWindow Frame MacPictSettingsWindow" = "863 285 420 264 0 0 1728 1084 "` in the
+`com.macpict.app` domain and deleted it to see whether my test would recreate it. It did not — the
+key came from a real session in which someone opened the settings window, not from the suite — so I
+**restored it byte-for-byte** with `defaults write`, and `defaults read com.macpict.app` now shows
+the original value. Nothing else in that domain was touched. The useful half of the result stands:
+building `SettingsWindowController` under test writes nothing to the user's defaults, because the
+window is never shown.
+
+## Remaining uncertainties
+
+- The revert write-back's one-turn window (above) is unclosable from my file.
+- The `.conflict` path is proven with an in-process duplicate registration. Whether macOS returns
+  `eventHotKeyExistsErr` for a *cross-process* duplicate — the case the user will actually hit —
+  is not something I can test from here, and the wording "is already in use by another
+  application" assumes it does.
+- Untested by me, unchanged from the previous round: the settings window actually appearing, ⌘,
+  from the app menu end to end, and the hotkey firing from another frontmost application. I did
+  not launch the app.

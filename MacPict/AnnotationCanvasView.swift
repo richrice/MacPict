@@ -33,9 +33,12 @@ final class AnnotationCanvasView: NSView {
 
     private struct TextEditing {
         let field: NSTextField
-        /// Top-left of the text box in image pixels, captured when editing began.
+        /// Top-left of the *field* in image pixels, captured when editing began. The glyphs sit
+        /// `textInset` view points to its right, so this is not the committed annotation origin.
         let origin: CGPoint
         let style: AnnotationStyle
+        /// View points between the field's leading edge and its first glyph.
+        let textInset: CGFloat
     }
 
     private var drag: Drag?
@@ -53,7 +56,14 @@ final class AnnotationCanvasView: NSView {
 
         document.objectWillChange
             .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.needsDisplay = true }
+                MainActor.assumeIsolated {
+                    self?.needsDisplay = true
+                    // A crop reached by keyboard (⇧⌘R, or ⌘Z over an earlier crop) changes
+                    // `imageScale` and `displayRect` under a live editor. This notification
+                    // arrives *before* the document has changed, so the refit is deferred to
+                    // the next layout pass, which reads the settled value.
+                    if self?.textEditing != nil { self?.needsLayout = true }
+                }
             }
             .store(in: &observers)
         document.$tool
@@ -126,6 +136,14 @@ final class AnnotationCanvasView: NSView {
         if let drag, drag.isCrop {
             drawCropOverlay(for: drag, displayRect: displayRect, geometry: geometry)
         }
+    }
+
+    /// The view's own size-change hook, and how a live editor keeps up with the geometry: a
+    /// window resize or a crop changes `imageScale`, and an editor left at the scale in force
+    /// when it opened would commit at a size the user was never shown.
+    override func layout() {
+        super.layout()
+        if let textEditing { fitEditor(textEditing) }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -307,9 +325,8 @@ final class AnnotationCanvasView: NSView {
 
     private func beginTextEditing(at imagePoint: CGPoint, geometry: CanvasGeometry) {
         let style = document.style
-        let font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
         let field = NSTextField(frame: .zero)
-        field.font = font
+        field.font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
         field.textColor = style.color.nsColor
         field.isBordered = false
         field.drawsBackground = false
@@ -317,17 +334,44 @@ final class AnnotationCanvasView: NSView {
         field.focusRingType = .none
         field.delegate = self
 
-        let origin = geometry.viewPoint(fromImage: imagePoint)
+        let editing = TextEditing(
+            field: field,
+            origin: imagePoint,
+            style: style,
+            textInset: Self.textInset(of: field)
+        )
+        addSubview(field)
+        fitEditor(editing)
+        window?.makeFirstResponder(field)
+        textEditing = editing
+    }
+
+    /// Places and sizes the editor for the geometry in force *now*. Called again from
+    /// `layout()` for the lifetime of the edit, because the editor is a preview of the
+    /// committed annotation and a preview drawn at a stale scale is a lie.
+    private func fitEditor(_ editing: TextEditing) {
+        let geometry = self.geometry
+        let font = AnnotationRenderer.font(for: editing.style, scale: 1 / geometry.imageScale)
+        editing.field.font = font
+        let origin = geometry.viewPoint(fromImage: editing.origin)
         let height = ceil(font.ascender - font.descender + font.leading) + 4
-        field.frame = CGRect(
+        editing.field.frame = CGRect(
             x: origin.x,
             y: origin.y,
             width: max(80, bounds.maxX - origin.x - 4),
             height: height
         )
-        addSubview(field)
-        window?.makeFirstResponder(field)
-        textEditing = TextEditing(field: field, origin: imagePoint, style: style)
+    }
+
+    /// Measured, not assumed: `NSTextFieldCell` lays its glyphs out inset horizontally from the
+    /// cell's leading edge by the field editor's line-fragment padding, and an empty cell's
+    /// width is exactly that padding on each side. `drawingRect(forBounds:)` cannot supply it —
+    /// on a borderless, non-background-drawing field it returns the bare bounds. Must be read
+    /// while the field is still empty. The vertical inset is zero (the cell top-aligns its one
+    /// line), which is why only x is compensated.
+    private static func textInset(of field: NSTextField) -> CGFloat {
+        guard let cell = field.cell else { return 0 }
+        return cell.cellSize.width / 2
     }
 
     /// Internal so the window controller's delivery path can resolve a half-typed label before
@@ -338,10 +382,18 @@ final class AnnotationCanvasView: NSView {
         // Read before the teardown, and prefer the field editor: while an edit is live it is
         // the authoritative copy of what the user has typed.
         let typed = editing.field.currentEditor()?.string ?? editing.field.stringValue
+        // The glyphs' top-left, not the field's: the renderer puts the layout box's corner
+        // exactly on the annotation origin, while the field holds its text `textInset` points
+        // inside the cell. Read from the frame the editor is wearing at this moment, so a
+        // resize or a crop mid-edit commits where the user was last shown the text.
+        let origin = geometry.imagePoint(fromView: CGPoint(
+            x: editing.field.frame.minX + editing.textInset,
+            y: editing.field.frame.minY
+        ))
         endEditing(editing)
         let string = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !string.isEmpty else { return }
-        document.append(Annotation(kind: .text(origin: editing.origin, string: string), style: editing.style))
+        document.append(Annotation(kind: .text(origin: origin, string: string), style: editing.style))
     }
 
     /// Discards a half-typed label. A no-op when nothing is being edited.

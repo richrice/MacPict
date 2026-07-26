@@ -9,7 +9,21 @@ struct MacPictApp: App {
         Settings {
             EmptyView()
         }
+        .commands {
+            // Route ⌘, and the app menu's Settings item to the real settings
+            // window instead of the placeholder SwiftUI Settings scene.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .macPictOpenSettings, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
+}
+
+extension Notification.Name {
+    static let macPictOpenSettings = Notification.Name("com.macpict.openSettings")
 }
 
 @MainActor

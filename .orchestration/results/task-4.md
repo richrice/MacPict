@@ -366,3 +366,121 @@ are mine — 8 `AnnotationRendererTests` and 12 `SnapshotExporterTests`, unchang
 since Repair 1, since this repair hardens existing helpers rather than adding cases. The
 total is 125 rather than 120 because Tasks 3 and 5 landed further tests while I worked; no
 failure appeared in their files during any of my runs.
+
+---
+
+## Repair 3 — remove the text outline
+
+User-reported defect: red text looked plain in the live editor and gained a white outline the
+instant Return was pressed. The outline was real, the mismatch was the bug — the editor is the
+preview and it was lying. Resolved the user's way: the render now matches the editor.
+
+### Production change (`MacPict/AnnotationRenderer.swift`, the only production file touched)
+
+- `textAttributes(for:scale:)` now returns `.font` and `.foregroundColor` only. `.strokeColor`
+  and `.strokeWidth` are gone, so text is filled in `style.color` with no stroke.
+- `private static let textOutlinePercent: CGFloat = 8.0` removed.
+- `private static func outlineColor(for:) -> NSColor` removed — the relative-luminance helper.
+  **No dead code remained**: `grep -rn "outline\|Outline\|strokeWidth\|strokeColor\|
+  textOutlinePercent" --include="*.swift" .` now matches only the doc comment on
+  `textAttributes` and the new test's name/messages. `outlineColor` had exactly one caller
+  (`textAttributes`) and `textOutlinePercent` exactly one (the same line), both deleted.
+  Note Swift does not warn on an unused `private static func`, so the build would have stayed
+  green with the helper orphaned; the grep is the check, not the compiler.
+- The doc comment no longer describes an outline. It states the fill-only behaviour and, in
+  one sentence, why the outline was removed (it appeared only on commit and diverged from the
+  live editor).
+
+`SnapshotExporter.swift` unchanged.
+
+### Assertions removed or rewritten, and why each is genuinely obsolete
+
+`MacPictTests/AnnotationRendererTests.swift`
+
+- **Deleted `testTextCarriesAContrastingOutline` entirely** (was lines 249-259), with all four
+  of its assertions: `strokeWidth < 0` for a light colour, `strokeWidth < 0` for a dark colour,
+  `strokeColor == .black` for yellow, `strokeColor == .white` for blue. Every one of them
+  asserted the *presence* and *polarity* of behaviour that the user has now told us is wrong.
+  There is no weaker-but-still-true version of "the glyphs carry a contrasting outline" — the
+  proposition is now false, not imprecise. This is deletion because the contract changed, not
+  because the assertions were inconvenient; the replacement below asserts the *opposite*
+  proposition just as strictly, so nothing became unpinned.
+- **Added `testTextRendersFillOnlyWithNoOutline`** in its place. It asserts, for yellow and
+  blue: `foregroundColor == color.nsColor`, `attributes[.strokeWidth] == nil`,
+  `attributes[.strokeColor] == nil`. Then a pixel proof rather than an attribute-only one:
+  yellow "Hgy" at 56 px on a white ground, scanning all 300x160 pixels, asserting
+  `fillPixels > 0` (r,g > 200, b < 100 — the glyphs really are yellow ink) and
+  `darkPixels == 0` (r,g,b all < 100). The removed outline was black for a light colour like
+  yellow, so it painted exactly those dark pixels.
+- **No assertion was loosened.** `testTextRendersRightSideUp` and `testFontAndTextSizeScale`
+  are untouched and still pass unmodified: the first samples black text on white, where the
+  ink was the *fill* in both regimes (black's outline was white and invisible on white), and
+  the second compares `textSize` against a freshly measured `NSAttributedString` and asserts
+  `height >= style.fontSize` — no exact pre-change size anywhere.
+
+**Mutation-tested, so the new test is load-bearing.** I re-added
+`.strokeColor: NSColor.black, .strokeWidth: -8.0` to `textAttributes` and re-ran: `exit 65`,
+`Executed 125 tests, with 5 failures`, all five inside `testTextRendersFillOnlyWithNoOutline` —
+`XCTAssertNil failed: "-8.0"` and `XCTAssertNil failed: "…colorspace 0 1"` once per colour,
+plus `XCTAssertEqual failed: ("2555") is not equal to ("0") - dark pixels mean the glyphs carry
+a contrasting outline`. 2555 outline pixels vs 0 is a wide margin, not a threshold that barely
+trips. The mutation was reverted from a pre-mutation copy and `diff`-verified identical before
+the final run.
+
+### `SnapshotExporterTests` — checked, nothing depended on outline ink
+
+`grep -n "text\|Text" MacPictTests/SnapshotExporterTests.swift` returns **nothing**. That suite
+draws only boxes and arrows, so no orientation or placement assertion there sampled a pixel
+that happened to be outline rather than fill. Nothing to fix, and I did not change the file.
+
+### `textSize` shift — nothing asserts an exact pre-change size
+
+`textSize(for:style:)` measures through `textAttributes`, so dropping the stroke changes the
+measurement very slightly (AppKit's advance is stroke-aware). `grep -rn "textSize"` across all
+sources and tests shows three call sites: the definition, `testTextRendersRightSideUp` (which
+derives its sample rectangle from the measurement, so it tracks the change automatically), and
+`testFontAndTextSizeScale` (relative assertions only). No production caller outside the
+renderer uses it. All eight renderer tests pass unchanged apart from the one replacement.
+
+### Requested finding — editor vs render font parity
+
+**They agree exactly on family, weight and size. Nothing to route to Task 5 on this point.**
+`AnnotationCanvasView.beginTextEditing` (line 310) sets the editor font with
+`AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)` — literally my function,
+not a reconstruction — and `AnnotationCanvasView.draw` (line 119-120) renders with
+`scale = 1 / geometry.imageScale`, the same expression. Both therefore resolve to
+`NSFont.systemFont(ofSize: style.fontSize / geometry.imageScale, weight: .semibold)`: one
+typeface, one weight, one point size, by construction. Colour matches too
+(`field.textColor = style.color.nsColor` vs `.foregroundColor: style.color.nsColor`).
+
+Two residual divergences I noticed while checking, **reported not fixed**, both in Task 5's
+file:
+
+1. **Glyph position, not typeface.** The render draws the attributed string with its layout
+   box top-left at the origin, while `NSTextField` draws inside a cell that insets the text a
+   couple of points horizontally and centres it in a frame of
+   `ceil(ascender - descender + leading) + 4`. So committed text can shift by ~2 pt relative to
+   where it sat while typing. Same class of defect as the outline, far smaller in magnitude.
+2. **Window resize during editing.** The field's font is fixed at `beginTextEditing` from the
+   `imageScale` of that moment and never refit; the committed render uses the scale at draw
+   time. Resizing the window mid-typing therefore changes the size on commit. Narrow, and
+   pre-existing.
+
+### Validation (real exit codes, final run on restored sources)
+
+```
+./scripts/bootstrap.sh   -> 0
+./scripts/build.sh       -> 0     ** BUILD SUCCEEDED **
+./scripts/test.sh        -> 0     ** TEST SUCCEEDED **, Executed 125 tests, 0 failures
+```
+
+Zero Swift warnings; the only `warning:` line in either log is the pre-existing
+`appintentsmetadataprocessor: Metadata extraction skipped` note from Xcode's tooling.
+
+**Test count: 125, unchanged from Repair 2's 125.** The delta accounts exactly: −1 for the
+deleted `testTextCarriesAContrastingOutline`, +1 for the added
+`testTextRendersFillOnlyWithNoOutline`. My two suites report `Executed 8 tests` for
+`AnnotationRendererTests` and `Executed 12 tests` for `SnapshotExporterTests`, both identical
+to Repair 2. No failure appeared in `GlobalHotkeyManager.swift`, `AppCoordinator.swift` or any
+settings file during these runs, so I had nothing to report from the concurrent hotkey work.
+The app was not launched.

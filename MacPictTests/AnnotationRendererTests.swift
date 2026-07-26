@@ -246,15 +246,36 @@ final class AnnotationRendererTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(measured.height, style.fontSize)
     }
 
-    func testTextCarriesAContrastingOutline() throws {
-        let light = AnnotationRenderer.textAttributes(for: AnnotationStyle(color: .yellow, size: .medium), scale: 1.0)
-        let dark = AnnotationRenderer.textAttributes(for: AnnotationStyle(color: .blue, size: .medium), scale: 1.0)
+    /// The committed annotation has to look like what the live `NSTextField` editor showed
+    /// while the user was typing, and the editor draws plain filled glyphs. So the render is
+    /// fill-only: no stroke attribute, no outline ink.
+    func testTextRendersFillOnlyWithNoOutline() throws {
+        for color in [AnnotationColor.yellow, .blue] {
+            let attributes = AnnotationRenderer.textAttributes(for: AnnotationStyle(color: color, size: .medium), scale: 1.0)
+            XCTAssertEqual(attributes[.foregroundColor] as? NSColor, color.nsColor)
+            XCTAssertNil(attributes[.strokeWidth], "a stroke would appear only on commit")
+            XCTAssertNil(attributes[.strokeColor], "a stroke would appear only on commit")
+        }
 
-        // Negative stroke width is AppKit's "fill and stroke", expressed as a percentage of
-        // the font size — that is what keeps the outline in step with `scale`.
-        XCTAssertLessThan(try XCTUnwrap(light[.strokeWidth] as? CGFloat), 0)
-        XCTAssertLessThan(try XCTUnwrap(dark[.strokeWidth] as? CGFloat), 0)
-        XCTAssertEqual(try XCTUnwrap(light[.strokeColor] as? NSColor), NSColor.black)
-        XCTAssertEqual(try XCTUnwrap(dark[.strokeColor] as? NSColor), NSColor.white)
+        // Pixel proof, not just an attribute check: yellow glyphs on white must leave no dark
+        // ink anywhere. The removed outline was black for a light colour like yellow, so it
+        // would darken every glyph edge in this render.
+        let style = AnnotationStyle(color: .yellow, size: .large)
+        let text = annotation(.text(origin: CGPoint(x: 10, y: 10), string: "Hgy"), style: style)
+        let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 300, height: 160) { context in
+            AnnotationRenderer.draw([text], in: context, scale: 1.0)
+        })
+
+        var darkPixels = 0
+        var fillPixels = 0
+        for y in 0..<buffer.height {
+            for x in 0..<buffer.width {
+                let sample = buffer.pixel(x: x, y: y)
+                if sample.r < 100, sample.g < 100, sample.b < 100 { darkPixels += 1 }
+                if sample.r > 200, sample.g > 200, sample.b < 100 { fillPixels += 1 }
+            }
+        }
+        XCTAssertGreaterThan(fillPixels, 0, "the glyphs are filled in style.color")
+        XCTAssertEqual(darkPixels, 0, "dark pixels mean the glyphs carry a contrasting outline")
     }
 }

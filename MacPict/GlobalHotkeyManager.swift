@@ -1,27 +1,38 @@
 import Carbon.HIToolbox
 import Foundation
 
-struct HotkeyShortcut: Equatable, Sendable {
-    let keyCode: UInt32
-    let carbonModifiers: UInt32
-    let displayString: String
-
-    static let captureDefault = HotkeyShortcut(
-        keyCode: UInt32(kVK_ANSI_4),
-        carbonModifiers: UInt32(controlKey | optionKey | cmdKey),
-        displayString: "⌃⌥⌘4"
-    )
-}
-
 enum HotkeyRegistrationStatus: Equatable, Sendable {
-    case registered
-    case failed(OSStatus)
+    case notRegistered
+    case registered(String)
+    case conflict(String)
+    case failed(String)
+
+    var displayText: String {
+        switch self {
+        case .notRegistered: "Not registered"
+        case let .registered(shortcut): "Registered: \(shortcut)"
+        case let .conflict(shortcut): "Shortcut conflict: \(shortcut) is already in use"
+        case let .failed(detail): "Registration failed: \(detail)"
+        }
+    }
+
+    var isRegistered: Bool {
+        if case .registered = self { return true }
+        return false
+    }
 }
 
 @MainActor
-final class GlobalHotkeyManager {
+final class GlobalHotkeyManager: ObservableObject {
     var onTrigger: (() -> Void)?
-    private(set) var status: HotkeyRegistrationStatus?
+    @Published private(set) var status: HotkeyRegistrationStatus = .notRegistered
+    /// The shortcut currently registered with Carbon, or nil when none is.
+    ///
+    /// This doubles as the shortcut a failed change reverts to, because "last known good" and
+    /// "live right now" are the same fact: every successful registration replaces the previous
+    /// one, and every failure or teardown leaves nothing registered. Storing it once means the
+    /// revert target can never disagree with what callers are told is active.
+    @Published private(set) var activeShortcut: HotkeyShortcut?
 
     // nonisolated(unsafe): only mutated on the main actor; deinit needs to read
     // them for teardown, which is safe because the object is uniquely referenced.
@@ -36,28 +47,44 @@ final class GlobalHotkeyManager {
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
 
+    /// Intentional divergence from MacDictate: its `register(_:)` unregisters first and, when the
+    /// new shortcut fails, leaves the user with no working hotkey at all. Now that the shortcut is
+    /// picked from a list and can land on a combination another app already owns, that is a trap.
+    /// So a failed attempt is reported for the shortcut the user chose — they must see that their
+    /// choice did not take — and the last shortcut that registered successfully is then silently
+    /// restored, so capture keeps working. `status` describes the attempted shortcut's outcome;
+    /// `activeShortcut` describes what is actually live afterwards.
     @discardableResult
     func register(_ shortcut: HotkeyShortcut) -> HotkeyRegistrationStatus {
-        unregister()
-
-        if eventHandler == nil {
-            // MacPict only acts on the key press; the release carries no meaning.
-            var eventTypes = [
-                EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            ]
-            let userData = Unmanaged.passUnretained(self).toOpaque()
-            let installStatus = InstallEventHandler(
-                GetApplicationEventTarget(),
-                Self.carbonEventHandler,
-                eventTypes.count,
-                &eventTypes,
-                userData,
-                &eventHandler
-            )
-            guard installStatus == noErr else {
-                AppLogger.hotkey.error("Carbon event handler installation failed with status \(installStatus)")
-                return record(.failed(installStatus))
+        // Read before attempting: the attempt releases the current registration.
+        let previous = activeShortcut
+        let outcome = attemptRegistration(of: shortcut)
+        if !outcome.isRegistered, let previous, previous != shortcut {
+            let reverted = attemptRegistration(of: previous)
+            if reverted.isRegistered {
+                AppLogger.hotkey.info("Reverted to \(previous.displayString, privacy: .public) after a failed change")
             }
+        }
+        status = outcome
+        return outcome
+    }
+
+    func unregister() {
+        releaseHotkey()
+        // Deliberate teardown: nothing should resurrect a shortcut after this point.
+        status = .notRegistered
+    }
+
+    /// Registers `shortcut`, updates `activeShortcut` to match live Carbon state, and reports the
+    /// outcome without touching `status`, so `register(_:)` alone decides what the user is told
+    /// and what is restored on failure.
+    private func attemptRegistration(of shortcut: HotkeyShortcut) -> HotkeyRegistrationStatus {
+        releaseHotkey()
+
+        let installStatus = installEventHandlerIfNeeded()
+        guard installStatus == noErr else {
+            AppLogger.hotkey.error("Carbon event handler installation failed with status \(installStatus)")
+            return .failed("Carbon event handler error \(installStatus)")
         }
 
         let registerStatus = RegisterEventHotKey(
@@ -68,29 +95,52 @@ final class GlobalHotkeyManager {
             0,
             &hotkeyRef
         )
-        guard registerStatus == noErr else {
+        switch registerStatus {
+        case noErr:
+            activeShortcut = shortcut
+            AppLogger.hotkey.info("Global hotkey \(shortcut.displayString, privacy: .public) registered")
+            return .registered(shortcut.displayString)
+        case OSStatus(eventHotKeyExistsErr):
+            hotkeyRef = nil
+            AppLogger.hotkey.error(
+                "\(shortcut.displayString, privacy: .public) is already in use by another application"
+            )
+            return .conflict(shortcut.displayString)
+        default:
             hotkeyRef = nil
             AppLogger.hotkey.error(
                 "Registration of \(shortcut.displayString, privacy: .public) failed with status \(registerStatus)"
             )
-            return record(.failed(registerStatus))
+            return .failed("Carbon error \(registerStatus)")
         }
-        AppLogger.hotkey.info("Global hotkey \(shortcut.displayString, privacy: .public) registered")
-        return record(.registered)
     }
 
-    func unregister() {
+    /// Drops any live registration. The single place `activeShortcut` is cleared, so it cannot
+    /// claim a shortcut is active after the Carbon registration behind it is gone.
+    private func releaseHotkey() {
         if let hotkeyRef {
             UnregisterEventHotKey(hotkeyRef)
             AppLogger.hotkey.info("Global hotkey unregistered")
         }
         hotkeyRef = nil
-        status = nil
+        activeShortcut = nil
     }
 
-    private func record(_ newStatus: HotkeyRegistrationStatus) -> HotkeyRegistrationStatus {
-        status = newStatus
-        return newStatus
+    private func installEventHandlerIfNeeded() -> OSStatus {
+        guard eventHandler == nil else { return noErr }
+        // MacPict only acts on the key press; the release carries no meaning.
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        ]
+        let userData = Unmanaged.passUnretained(self).toOpaque()
+        return InstallEventHandler(
+            GetApplicationEventTarget(),
+            Self.carbonEventHandler,
+            eventTypes.count,
+            &eventTypes,
+            userData,
+            &eventHandler
+        )
     }
 
     private func handle(identifier: UInt32) -> OSStatus {

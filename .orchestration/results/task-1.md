@@ -147,3 +147,84 @@ ambiguous for this task.
   shell imports only `AppKit`, `SwiftUI`, `Foundation`, and `OSLog`, so
   ScreenCaptureKit/Carbon/UniformTypeIdentifiers linkage is not yet exercised by any code.
   Wave 2/3 will be the first real test of those.
+
+## Follow-up — route ⌘, to the settings window
+
+### What changed
+
+`MacPict/MacPictApp.swift` only. Nothing else was touched; `AppCoordinator.swift` was not
+opened or edited.
+
+1. `.commands { CommandGroup(replacing: .appSettings) { … } }` attached to the existing
+   `Settings { EmptyView() }` scene, mirroring
+   `/Users/rich/Repos/MacDictate/MacDictate/MacDictateApp.swift:12-21` line for line:
+
+```swift
+        .commands {
+            // Route ⌘, and the app menu's Settings item to the real settings
+            // window instead of the placeholder SwiftUI Settings scene.
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .macPictOpenSettings, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
+```
+
+2. The pinned notification name, declared verbatim as specified, at file scope below
+   `MacPictApp`:
+
+```swift
+extension Notification.Name {
+    static let macPictOpenSettings = Notification.Name("com.macpict.openSettings")
+}
+```
+
+`AppDelegate` is byte-for-byte unchanged: same `NSClassFromString("XCTestCase")` guard, same
+`applicationWillTerminate` → `coordinator?.stop()`, same
+`applicationShouldTerminateAfterLastWindowClosed` → `false`. The `Settings { EmptyView() }`
+scene was kept. No new scene, window, or store.
+
+### Can ⌘, actually reach an accessory app?
+
+I did **not** verify this at runtime — the instruction was not to launch the app, so this is
+reasoning plus static evidence, not an observation. My reading is that it does reach the
+user, and I did not find grounds to stop:
+
+- `LSUIElement`/`.accessory` suppresses *display* of the menu bar; it does not suppress
+  `NSApp.mainMenu` itself. `NSApplication.sendEvent(_:)` offers a key-down to
+  `mainMenu.performKeyEquivalent(_:)` before the responder chain, and that path does not
+  depend on the menu bar being drawn.
+- Evidence that the mechanism is live in this app: the shell's own status-item menu already
+  carries `keyEquivalent: "q"` on Quit, and MacDictate — also `LSUIElement` — ships this exact
+  `CommandGroup(replacing: .appSettings)` construction for the same purpose.
+- The caveat in the instruction holds and I am not claiming otherwise: this only fires while
+  MacPict is the active app with one of its own windows key (the annotation window, or the
+  settings window once open). With another app frontmost, `⌘,` belongs to that app — the
+  global hotkey and the status-item menu remain the only entry points then.
+
+So the change is not a no-op, but its reach is narrower than `⌘,` in a regular app. Worth a
+manual check on your relaunch: open the annotation window, press `⌘,`, confirm settings
+appears.
+
+### Validation — real exit codes
+
+```
+cd /Users/rich/Repos/MacPict
+./scripts/bootstrap.sh   EXIT=0
+./scripts/build.sh       EXIT=0   ** BUILD SUCCEEDED **
+./scripts/test.sh        EXIT=0   ** TEST SUCCEEDED **
+```
+
+- Zero Swift compiler warnings and zero errors. The only `warning:` in the build log is again
+  `appintentsmetadataprocessor … Metadata extraction skipped. No AppIntents.framework
+  dependency found.`
+- `Executed 148 tests, with 0 failures (0 unexpected)` — 148, not the 146 quoted in the
+  request; other workers evidently landed two more tests between that count and this run.
+  Suites present: AnnotationModel, AnnotationRenderer, AnnotationWindowController, AppLogger,
+  CanvasGeometry, Coordinator, DeliveryService, DisplayLocator, HotkeyShortcut,
+  ScreenCaptureService, SettingsStore, SnapshotExporter.
+- No failure appeared in any file owned by Tasks 2, 5, 7 or 8; nothing to report there, and
+  none of those files were touched.
+- The app was not launched.

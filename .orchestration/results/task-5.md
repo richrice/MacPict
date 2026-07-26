@@ -478,3 +478,157 @@ commit/cancel switch present, two `cancelTextEditing` call sites in the controll
 (`testFractionalCropRectIsAlignedByTheDocumentPolicy` and friends, off-by-one on aligned crop
 dimensions) — a transient mid-edit state of Task 4's concurrent alignment repair. It cleared on
 the next run with no action from me, and I touched none of those files.
+
+---
+
+## Repair 4 — text position and size parity with the live editor
+
+Files changed: `MacPict/AnnotationCanvasView.swift`,
+`MacPictTests/AnnotationWindowControllerTests.swift`. Nothing else was touched — in
+particular not `AnnotationRenderer.swift` or `SnapshotExporter.swift`, and no outline was
+re-added.
+
+### Item 1 — how the inset was derived
+
+**Measured, from the cell, not hard-coded.**
+
+```swift
+private static func textInset(of field: NSTextField) -> CGFloat {
+    guard let cell = field.cell else { return 0 }
+    return cell.cellSize.width / 2
+}
+```
+
+read once in `beginTextEditing` while the field is still empty and carried on `TextEditing`.
+Three facts behind that one line, each established by running code rather than by reasoning:
+
+1. **`drawingRect(forBounds:)` cannot supply the inset, contrary to the brief's suggestion.**
+   On this borderless, non-background-drawing field it returns the bare bounds —
+   `(0, 0, 200, 33)` for a `(x, y, 200, 33)` frame — as does `titleRect(forBounds:)`. Measured
+   at 24/36/56 pt.
+2. **The real offset is the field editor's line-fragment padding, and it is horizontal only.**
+   Rendering the same string twice into an 8×-supersampled flipped context — once through
+   `NSTextFieldCell.draw(withFrame:in:)`, once through `NSAttributedString.draw(at:)` with
+   `AnnotationRenderer`'s attributes — gives ink boxes of **identical size** offset by exactly
+   `dx = 2.0, dy = 0.0` at 24 pt, 36 pt and 56 pt. Independently, a live field editor reports
+   `textContainerOrigin == (0, 0)` in the field's coordinates and
+   `textContainer.lineFragmentPadding == 2.0`. Both routes agree, which is why only x is
+   compensated and there is no vertical fudge.
+3. **An empty cell's width is exactly that padding on each side.** `cell.cellSize.width == 4.0`
+   for system font sizes 8/12/24/36/56/120 at regular, semibold and bold weight, and for Menlo,
+   Helvetica and Times New Roman; and `cellSize.width - NSAttributedString(...).size().width ==
+   4.0` for every one of those with a non-empty string. So `cellSize.width / 2` *is* the
+   per-side inset, read from the cell that will do the drawing, and it tracks a change in the
+   padding instead of enshrining 2.0.
+
+The commit now converts the **glyph** corner rather than the field's:
+
+```swift
+let origin = geometry.imagePoint(fromView: CGPoint(
+    x: editing.field.frame.minX + editing.textInset,
+    y: editing.field.frame.minY
+))
+```
+
+Reading the field's *current* frame and the *current* geometry (rather than the image point
+captured at begin) is what makes items 1 and 2 compose: a resize or a crop mid-edit commits
+where the user was last shown the text.
+
+Empirical confirmation that the fix lands, not just an argument that it should: in the standalone
+harness the field's ink on a canvas identical to the app's is `(316.5, 43.0, 133.0, 69.5)` in
+view points, and the committed annotation renders at `(316.5, 43.0, 133.0, 69.5)`. Pre-fix the
+committed render sat at `x = 314.5`.
+
+### Item 2 — keeping the live editor in step with the geometry
+
+`beginTextEditing` no longer computes the frame and font inline. Both now come from
+`fitEditor(_:)`, which reads `self.geometry` each time, and `AnnotationCanvasView.layout()` —
+the view's own size-change hook, not a new observer — calls it for the lifetime of the edit:
+
+```swift
+override func layout() {
+    super.layout()
+    if let textEditing { fitEditor(textEditing) }
+}
+```
+
+**Crop during a live edit: yes, it is reachable, and it is covered.** A crop *drag* cannot land
+mid-edit (`mouseDown` commits the text and returns before any drag starts), but `⇧⌘R` and a `⌘Z`
+over an earlier crop are key equivalents, and `performKeyEquivalent` reaches the canvas whatever
+holds first responder — the field editor does not consume them. Both change `cropRect`, hence
+`imageScale` and `displayRect`, under a live editor.
+`testTextEditLiveAcrossACropCommitsAtTheSizeTheEditorWasShowing` drives exactly that path and
+asserts the reset actually moved the scale first.
+
+The existing `document.objectWillChange` sink additionally sets `needsLayout` while an edit is
+live. That notification arrives *before* the document has changed, so refitting inside it would
+read the pre-change crop; deferring to the next layout pass reads the settled value. **Honest
+caveat: no test isolates that line.** Removing it leaves all 21 tests green, because the field's
+own autoresizing-generated constraints incidentally dirty layout on every `layoutIfNeeded`. It
+is there for the case the layout hook alone does not cover — a crop that changes `imageScale`
+without changing the window's content size, which `AnnotationWindowController.contentSize(for:)`
+produces whenever both the old and the new crop clamp to `minimumContentSize`. I judged relying
+on an incidental autolayout side effect worse than one explicit line; say the word if you want
+it gone.
+
+### New tests (3, all in `MacPictTests/AnnotationWindowControllerTests.swift`)
+
+The assertion in all three is a **photograph, not a formula**: `redInk(of:)` renders the canvas
+via `cacheDisplay` — which includes the `NSTextField` subview — and returns the bounding box, in
+view points, of every pixel drawn in the annotation colour (red 1/0.2/0.2 over 0.3 grey on
+black). The same glyphs are measured off the canvas with the editor live and again after the
+commit, and the two boxes must coincide within 1 pt. Nothing re-derives the offset the fix
+applies.
+
+- `testCommittedTextLandsWhereTheEditorDrewIt`
+- `testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing` — also asserts the resize
+  actually changed `imageScale` and that the editor's ink grew, so it cannot pass by the resize
+  being a no-op
+- `testTextEditLiveAcrossACropCommitsAtTheSizeTheEditorWasShowing`
+
+New helpers: `redInk(of:)` and `beginTextEdit(_:atImagePoint:)`. The existing
+`beginTextEdit(_:)` and every Repair 1–3 test are untouched.
+
+**One thing that had to change to make the editor measurable, and it is worth knowing.** The
+existing helper types by assigning `field.stringValue`. With a live field editor — which
+`makeFirstResponder` installs even in a non-key window, contrary to the note in Repair 2 —
+that updates the cell's value and `currentEditor()?.string`, but the field editor renders
+**nothing**: the text does not pick up the cell's attributes. The new helper types the way a
+user does, `editor.insertText(_:replacementRange:)`, after which the field editor draws, and it
+draws in *exactly* the place the cell does (harness: cell ink `(316.5, 43.0, 133.5, 69.5)`,
+field-editor ink `(316.5, 43.0, 133.0, 69.5)`). So the test measures what the user actually
+looks at.
+
+### Mutation checks — all three run, none reasoned
+
+| Mutation | Result |
+|---|---|
+| **A** — commit reverted to `let origin = editing.origin` (item 1 undone) | `** TEST FAILED **`, 3 failures. `testCommittedTextLandsWhereTheEditorDrewIt`: `("314.5") is not equal to ("316.5") +/- ("1.0") - committed glyphs moved horizontally` — the reported 2 pt jump, to the point. Both geometry-change tests failed on x too. Everything else passed. |
+| **B** — `fitEditor` call removed from `layout()` (item 2 undone) | `** TEST FAILED **`, 9 failures. `testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing` failed first on `("69.5") is not greater than ("83.4") - the editor must have grown with the canvas`, then on ink height `("140.5") is not equal to ("69.5")` — the editor previewing half the size it committed. `testCommittedTextLandsWhereTheEditorDrewIt` still **passed**, which is the correct discrimination between the two items. |
+| **C** — `needsLayout` line removed from the `objectWillChange` sink | exit 0, 21/21 pass. Reported above rather than papered over. |
+
+Mutations A and B were applied to a scratchpad-backed copy and restored in the same command;
+the restored file was re-grepped for `x: editing.field.frame.minX + editing.textInset` and
+`if let textEditing { fitEditor(textEditing) }`.
+
+### Validation (real exit codes, after restore)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **` |
+| `xcodebuild … clean build` | exit 0; `grep -E "\.swift.*(warning\|error)"` → no output. The single line containing "warning" is the `appintentsmetadataprocessor` tool note. |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **146 tests, 0 failures** |
+
+`AnnotationWindowControllerTests` is now 21 tests (18 + 3). The suite total rose from 125 to
+146: my 3 plus 18 added concurrently by the hotkey-settings tasks. No failure appeared in
+`SettingsStore.swift`, `SettingsView.swift`, `GlobalHotkeyManager.swift` or
+`AppCoordinator.swift`, none of which I touched.
+
+### Remaining uncertainties
+
+- The parity is measured with the window never presented and never key. The field editor is
+  live in that state and draws identically to the cell, so I believe it generalises, but the
+  final word is the user looking at a real edit.
+- `textInset(of:)` returns 0 if `field.cell` is ever nil. `NSTextField` always has one; the
+  guard exists only because the API is optional.
