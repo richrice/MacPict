@@ -733,6 +733,105 @@ final class AnnotationWindowControllerTests: XCTestCase {
         )
     }
 
+    // MARK: - Progressive typing
+
+    /// Types one character at a time, the way a person does, and reports the editor's line
+    /// count after each keystroke. Every other test in this file sets a whole string at once,
+    /// which is exactly why a per-keystroke oscillation shipped unnoticed.
+    private func lineCountsWhileTyping(_ string: String, into editor: NSTextView) -> [Int] {
+        string.map { character in
+            editor.insertText(String(character), replacementRange: editor.selectedRange())
+            guard let manager = editor.layoutManager else { return -1 }
+            var count = 0
+            var index = 0
+            while index < manager.numberOfGlyphs {
+                var range = NSRange()
+                _ = manager.lineFragmentRect(forGlyphAt: index, effectiveRange: &range)
+                count += 1
+                index = NSMaxRange(range)
+            }
+            return count
+        }
+    }
+
+    /// The reported regression: typing in the middle of the image, with room to spare, wrapped
+    /// onto a second line as soon as a word was finished and flipped back on the next keystroke.
+    func testTypingMidImageNeverWrapsOrChangesLineCount() throws {
+        try useLargeDocument()
+        let document = controller.document
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        document.crop(to: crop)
+        document.style = AnnotationStyle(color: .red, size: .small)
+
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: crop.midX - 100, y: crop.midY))
+        let counts = lineCountsWhileTyping("The quick brown", into: editor)
+
+        XCTAssertEqual(Set(counts), [1], "text with room to spare must stay on one line: \(counts)")
+    }
+
+    /// Wrapping, when it is genuinely needed, must only ever add lines as the text grows. A
+    /// count that goes back down is the container fighting its own content.
+    func testTypingIntoANarrowCropOnlyEverAddsLines() throws {
+        try useLargeDocument()
+        let document = controller.document
+        document.crop(to: CGRect(x: 100, y: 100, width: 220, height: 300))
+        document.style = AnnotationStyle(color: .red, size: .small)
+
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: 110, y: 150))
+        let counts = lineCountsWhileTyping("far wider than this narrow crop can ever hold", into: editor)
+
+        XCTAssertEqual(counts, counts.sorted(), "the line count went back down while typing: \(counts)")
+        XCTAssertGreaterThan(counts.last ?? 0, 1, "this string is meant to wrap")
+    }
+
+    /// The two ways text reaches the editor must not drift apart: whatever progressive typing
+    /// produces, setting the same string in one go has to produce as well.
+    func testTypedAndSetAllAtOnceProduceTheSameCommittedAnnotation() throws {
+        let string = "The quick brown fox"
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        let anchor = CGPoint(x: crop.midX - 100, y: crop.midY)
+
+        try useLargeDocument()
+        controller.document.crop(to: crop)
+        controller.document.style = AnnotationStyle(color: .red, size: .small)
+        let editor = try beginTextEdit("", atImagePoint: anchor)
+        _ = lineCountsWhileTyping(string, into: editor)
+        try canvas().commitTextEditing()
+        let typed = try XCTUnwrap(controller.document.annotations.last?.kind)
+        let typedInk = try exportedInk(of: controller.document)
+
+        try useLargeDocument()
+        controller.document.crop(to: crop)
+        controller.document.style = AnnotationStyle(color: .red, size: .small)
+        try beginTextEdit(string, atImagePoint: anchor)
+        try canvas().commitTextEditing()
+        let atOnce = try XCTUnwrap(controller.document.annotations.last?.kind)
+        let atOnceInk = try exportedInk(of: controller.document)
+
+        XCTAssertEqual(typed, atOnce, "typing and setting the string produced different annotations")
+        XCTAssertEqual(typedInk.minX, atOnceInk.minX)
+        XCTAssertEqual(typedInk.maxX, atOnceInk.maxX)
+        XCTAssertEqual(typedInk.maxY - typedInk.minY, atOnceInk.maxY - atOnceInk.minY)
+    }
+
+    /// An explicit break is not a wrap: the unbounded container must not swallow ⇧↩.
+    func testShiftReturnStillBreaksWhileTypingProgressively() throws {
+        try useLargeDocument()
+        let document = controller.document
+        document.crop(to: CGRect(x: 100, y: 100, width: 600, height: 400))
+        document.style = AnnotationStyle(color: .red, size: .small)
+        let canvas = try canvas()
+
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: 200, y: 200))
+        _ = lineCountsWhileTyping("Hello", into: editor)
+        XCTAssertTrue(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertLineBreak(_:))))
+        let counts = lineCountsWhileTyping("World", into: editor)
+
+        XCTAssertEqual(Set(counts), [2], "an explicit line break must survive the unbounded container")
+        canvas.commitTextEditing()
+        XCTAssertEqual(committedTexts(), ["Hello\nWorld"])
+    }
+
     // MARK: - Multi-line text
 
     /// Literally what the user asked for: a few words, ⇧↩, and more text underneath the start

@@ -1057,3 +1057,107 @@ Tasks 3 and 4 had both landed before I started, so the only transient red was my
 Everything preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text
 position/size parity, `fitEditor` tracking geometry changes, per-tool cursors, the letterbox
 hairlines, and the extent clamping.
+
+---
+
+## Regression — editor oscillates between wrapped and unwrapped
+
+### Your hypothesis was right, and the reproduction showed it was worse than transient
+
+Typed one character at a time into an editor placed dead centre of a 600×400 crop
+(`displayRect` 300 pt wide), recording the editor's line count after each keystroke:
+
+```
+after "The "    lines=1  containerWidth= 24.00
+after "The q"   lines=2  containerWidth= 32.00
+after "The qu"  lines=2  containerWidth= 39.00
+...
+after "The quick brown"  lines=2  containerWidth= 91.00
+```
+
+The container was 24–91 pt wide inside a 300 pt image, because it was
+`textSize(currentString) × scale` — the measured width of the string it was laying out. Sized to
+its own content it is permanently exactly full, so the next character overflows and wraps. It is
+not only a flash: the wrap **persists** from `"The q"` onward. The trim compounded it — the
+container is measured from the *trimmed* string, so finishing a word with a space leaves the space
+and the caret beyond the container's end, which is precisely the "hit space and it drops to another
+line" the user described.
+
+### The fix
+
+- `wrapWidth == nil` (the common case): the container is **`.greatestFiniteMagnitude`** — it cannot
+  wrap under any circumstance. An explicit `⇧↩` still breaks, because a newline is not a wrap.
+- `widthTracksTextView = false`, so the container never follows the frame.
+- The frame is now **display only**: it follows the text the container has already laid out, read
+  from the view's own layout manager, plus a line-height of slack so the caret after a trailing
+  space is not clipped. It cannot feed back into line breaking.
+
+After the fix the same progressive typing gives `lines=1` throughout, with the frame growing
+smoothly 24 → 113 pt.
+
+### Where I deviated from your instruction, and the measurement behind it
+
+You asked for the **allowed** width when wrapping is engaged. I kept the **used** width there, and
+the reason is measured rather than preferred: I typed the wrapping case in character by character
+under both.
+
+| Wrapped-case container | Line-count reversals while typing | Break parity |
+|---|---|---|
+| allowed width (`sourceRect.width × scale`) | **0** | fails — 8 % divergence, the moved-word signature |
+| used width (`textSize(maxWidth:).width × scale`) | **0** | passes |
+
+Neither oscillates, so the trade you offered — everyday typing over break parity — does not have to
+be made here; both are available. The pathology is specific to the *unwrapped* case, and the
+difference is structural, not incidental: the used width is the longest line of a *multi-line*
+layout, so the line being typed into has room below it, whereas a single line's own width leaves
+none at all. Had the wrapped case shown even one reversal I would have taken the allowed width and
+weakened `testOverWideStringWrapsAtTheSameBreaksInEditorAndExport` accordingly; it did not, so that
+test still passes unchanged.
+
+### Task 4's structural suggestion: sound, but it cannot land alone
+
+Laying the editor out in image-pixel metrics inside a scaled view is the right end state — breaks
+would agree by construction instead of by two measurements happening to match. It cannot be done
+from my files alone, and the number says why.
+
+The same characters measure ~2.87 % narrower at the preview font than at image metrics (measured:
+the renderer's longest line 199.76 px against the editor's 194.19 px equivalent for an identical
+three-line layout). Today the editor and the *committed* render agree because both lay out at the
+scaled font — that is what `drawText` drawing each line at the scaled font buys. Switch the editor
+to image metrics without changing `drawText` in the same step and that 2.87 % becomes a real
+divergence between editor and committed render: ~7.7 pt on the 269 pt string in
+`testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing`, whose tolerance is 1 pt. It
+would break that test and the two beside it.
+
+So it needs `drawText` to move to a single CTM-scaled layout **in the same change**, which is Task
+4's file. I did not attempt it. Route it to them if you want it; the fallback above costs nothing
+today, since break parity is preserved either way.
+
+### New tests
+
+- `testTypingMidImageNeverWrapsOrChangesLineCount` — the reported regression
+- `testTypingIntoANarrowCropOnlyEverAddsLines` — wrapping may add lines, never take them back
+- `testTypedAndSetAllAtOnceProduceTheSameCommittedAnnotation` — the two input paths cannot drift
+- `testShiftReturnStillBreaksWhileTypingProgressively` — the unbounded container must not swallow ⇧↩
+
+They share `lineCountsWhileTyping(_:into:)`, which inserts one character at a time and samples the
+line count after each. That helper is the actual lesson: every previous test set a whole string at
+once, so a per-keystroke oscillation was invisible to all of them.
+
+### Mutation checks
+
+| Mutation | Result |
+|---|---|
+| **A** — content-derived container restored (the shipped bug) | `** TEST FAILED **`: `testTypingMidImageNeverWrapsOrChangesLineCount` and `testShiftReturnStillBreaksWhileTypingProgressively`, and nothing else. |
+| **B** — `widthTracksTextView = true` again | `** TEST SUCCEEDED **` — reported rather than hidden. With the container size set explicitly and the frame carrying a line-height of slack, the frame is wide enough that tracking it does not oscillate for any single glyph. So that line is belt-and-braces, not the fix; I kept it because it makes the container's independence structural rather than dependent on the slack staying larger than the widest glyph. |
+
+### Validation (real exit codes, final state)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **187 tests, 0 failures** |
+
+Preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text position parity, extent
+clamping, per-tool cursors, letterbox hairlines, and `lineFragmentPadding = 0`.

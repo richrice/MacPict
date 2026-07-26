@@ -440,7 +440,10 @@ final class AnnotationCanvasView: NSView {
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.lineBreakMode = .byWordWrapping
         textView.textContainer?.maximumNumberOfLines = 0
-        textView.textContainer?.widthTracksTextView = true
+        // The container must NOT track the frame: the frame follows the text for display, and a
+        // container that followed it too would be permanently exactly as wide as its own
+        // content. `fitEditor` sets the container width explicitly instead.
+        textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.heightTracksTextView = false
         textView.delegate = self
 
@@ -523,21 +526,48 @@ final class AnnotationCanvasView: NSView {
             maxWidth: placement.wrapWidth
         )
 
-        // The frame is the editor's wrap width — `widthTracksTextView` ties the container to it —
-        // and it is the width the renderer *used*, not the width it was allowed. That
-        // difference is load-bearing. Glyph advances are not linear in point size, so at the
-        // preview's smaller font a word the renderer rejected can still fit inside the full
-        // wrap width: measured, "far wider than this" packed onto one 215.6 px line on screen
-        // where the renderer broke it at 199.8 px. Handing the editor the used width removes
-        // that slack, and does so in both directions — every line the renderer kept fits,
-        // because no line exceeds the longest one, and every word it rejected still overflows,
-        // because the used width is stricter than the wrap width it was rejected against.
-        let width = placement.wrapWidth == nil
-            ? max(Self.minimumEditorWidth, ceil(size.width * scale) + 1)
-            : max(Self.minimumEditorWidth, size.width * scale)
+        // Where lines break is the *container's* business, and the container width is never
+        // derived from the text being laid out. A container sized to its own content is
+        // permanently exactly full, so the next keystroke overflows it, wraps, and unwraps
+        // again on the re-fit: measured, "The q" sat on two lines in the middle of a 300 pt
+        // wide image, and typing on kept flipping between one line and two.
+        //
+        // Unwrapped text therefore gets an unbounded container — it cannot wrap by accident,
+        // and a ⇧↩ still breaks because an explicit newline is not a wrap.
+        //
+        // Wrapped text keeps the width the renderer *used*, which is what makes the editor
+        // break where the export breaks (at the preview's smaller font a word the renderer
+        // rejected still fits inside the full allowed width — measured, an 8 % divergence).
+        // That is safe here and not in the unwrapped case, and the difference is not
+        // cosmetic: the used width is the longest line of a multi-line layout, so the line
+        // being typed into has room, whereas a single line's own width leaves none at all.
+        // Verified by typing the case in character by character: zero line-count reversals
+        // with either width, so keeping break parity costs nothing.
+        let containerWidth = placement.wrapWidth == nil
+            ? CGFloat.greatestFiniteMagnitude
+            : size.width * scale
+        editing.textView.textContainer?.size = CGSize(
+            width: containerWidth,
+            height: .greatestFiniteMagnitude
+        )
+
+        // The frame is display only now, and follows the text the container has already laid
+        // out, so it cannot feed back into line breaking. Read from the view's own layout
+        // rather than re-measured, and given a caret's worth of slack so the insertion point
+        // after a trailing space is not clipped.
+        let laidOut = editing.textView.layoutManager.map { manager -> CGSize in
+            if let container = editing.textView.textContainer {
+                manager.ensureLayout(for: container)
+                return manager.usedRect(for: container).size
+            }
+            return .zero
+        } ?? .zero
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let width = placement.wrapWidth == nil
+            ? max(Self.minimumEditorWidth, ceil(max(laidOut.width, size.width * scale)) + lineHeight)
+            : max(Self.minimumEditorWidth, containerWidth)
         let height = min(
-            max(lineHeight, ceil(size.height * scale)) + 4,
+            max(lineHeight, ceil(max(laidOut.height, size.height * scale))) + 4,
             max(lineHeight, geometry.displayRect.maxY - glyph.y)
         )
         editing.textView.frame = CGRect(
