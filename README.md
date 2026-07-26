@@ -15,9 +15,19 @@ The capture shortcut is configurable — see [Choosing your shortcut](#choosing-
 
 MacPict uses Swift, SwiftUI, AppKit, ScreenCaptureKit, CoreGraphics, and Carbon. It has no runtime third-party dependencies. XcodeGen is a build-time project generator only.
 
+## Install
+
+```sh
+./scripts/install.sh
+```
+
+Builds Release, quits any running copy, and installs to `/Applications/MacPict.app`. Then launch it from Applications or Spotlight.
+
+Screen Recording is granted per binary, so a freshly installed build is a new binary as far as macOS is concerned: it will ask again, and it generally needs a relaunch after you grant it.
+
 ## Bootstrap, build, test, and run
 
-From the repository root:
+For development, from the repository root:
 
 ```sh
 ./scripts/bootstrap.sh
@@ -62,6 +72,8 @@ macOS often does not apply a newly granted Screen Recording permission to an alr
 | `6` or `C` | crop tool |
 | `⌘`-drag | crop without leaving the tool you are on |
 | `⇧⌘R` | reset the crop back to the full display |
+| `⇧↩` | new line while typing text |
+| `↩` | commit the text annotation |
 | `⌘Z` / `⇧⌘Z` | undo / redo — crops included |
 | `⌘⌫` | clear all annotations |
 | `[` / `]` | smaller / larger stroke and text size |
@@ -69,8 +81,19 @@ macOS often does not apply a newly granted Screen Recording permission to an alr
 | `⌥⌘↩` | write the annotated PNG to a temp file and copy its path, close the window |
 | `Esc` | cancel the current text edit, otherwise close the window |
 | `⌘W` | close the window |
+| `⌘,` | settings |
 
 `⌘↩` is the primary route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a file path is easier to hand over than a binary blob.
+
+A capture opens with the **crop tool already selected**, because the usual first move is to tighten the shot to what matters. Once you crop, the tool reverts to whatever you had before, so you land straight in annotating.
+
+The pointer tells you which mode you are in: a crosshair for crop and the four shape tools, an I-beam for text.
+
+## Text
+
+Text wraps only when it has to. A short note near an edge shifts to stay whole rather than reflowing; a string too wide for the visible image wraps at the crop edge. `⇧↩` breaks a line deliberately at any point.
+
+Annotations cannot leave the visible image. Drag a shape past the edge and it stops there, with its stroke landing on the boundary rather than being cut flat; type past the edge and the text stops too. That rule is the same for every tool.
 
 ## Choosing your shortcut
 
