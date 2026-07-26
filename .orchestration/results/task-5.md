@@ -827,3 +827,121 @@ inspection:
 
 Everything preserved: the `isClosed` latch, the single `deliver(_:)` path, crop auto-revert, text
 position/size parity, `fitEditor` tracking geometry, and the per-tool cursors.
+
+---
+
+## Fix — text extent must stay inside the visible crop
+
+### Design: (a), text constrained the way a dragged arrow is
+
+The user's clarification settles it, and it matches what I had already built: text is now bounded
+by extent, not just by anchor, so it comes to rest against the crop edge exactly as an arrow
+endpoint does. Option (b) is dropped — clipping honestly would still leave text as the one tool
+that behaves differently from the other five, which is the thing being objected to.
+
+### Implementation
+
+One placement function, `glyphOrigin(for:editing:geometry:)`, used by **both** the live editor and
+the commit, so they cannot disagree:
+
+- measures with `AnnotationRenderer.textSize(for:style:)` and nothing else — the previously unused
+  API, now wired up;
+- shifts the origin left and up so `origin + textSize` fits inside `sourceRect`;
+- when the string is wider or taller than the whole visible image, pins to `sourceRect.origin` and
+  lets it clip, since shifting cannot help.
+
+`controlTextDidChange` re-fits on every keystroke, so the preview tracks the constraint live.
+`fitEditor` sizes the field to end exactly at `displayRect.maxX`, so the editor clips where the
+export clips. `commitTextEditing` now derives the origin from the shared function against the
+geometry in force at commit, instead of reading it back out of the field's frame — same value when
+nothing has moved, and one less round trip through `textInset`.
+
+### Two corrections that only rendering could have found
+
+1. **"This" drew as "Thi".** With the field width set to `displayRect.maxX - glyph.x + textInset`,
+   a string the shift had made room for still lost its last character: the cell reserves its inset
+   at *both* ends. Caught in the filmstrip, not in the code.
+2. **Editor and export clipped in different places.** For an over-wide string the editor stopped at
+   the last whole word — measured ink ending at image x=285 against a crop edge at x=320, a 35 px
+   disagreement — because the cell word-breaks while `AnnotationRenderer` clips mid-glyph. Fixed
+   with `usesSingleLineMode = true` and `lineBreakMode = .byClipping`. That in turn removed the
+   trailing inset reservation, so the width is now `+ textInset` (leading only); measured after:
+   editor ink ends at image **x=319.94**, crop edge **x=320.0**.
+
+### How it feels while typing
+
+Assessed from a rendered filmstrip of the editor as the string grows (`text-extent-evidence.png`
+in the session scratchpad): `T` → `This` → `This can` → `This cannot fit`, each complete, each
+hugging the right edge, with the field origin moving 240 → 228 → 161 → 66 pt. Because the right
+edge stays pinned, the per-keystroke shift is exactly the width of the character just typed — the
+same motion as typing at the end of any macOS text field, except nothing is hidden, because the
+whole string moves rather than sliding out of a fixed box. Only once the string exceeds the entire
+visible width does it pin and clip, and the last two filmstrip frames show that clip landing in the
+same place for two different over-long strings.
+
+### Arrows — measured, not changed
+
+A clamped arrow *can* paint past the boundary, by exactly half its stroke width. Crop right edge at
+x=300, arrow `to` clamped onto it:
+
+| Size | lineWidth | Ink ends (full image) | Past the crop edge | Cropped export |
+|---|---|---|---|---|
+| Small | 4 | x=301 | 2 px | ink touches the last column |
+| Medium | 8 | x=303 | 4 px | ink touches the last column |
+| Large | 14 | x=306 | 7 px | ink touches the last column |
+
+Exactly `lineWidth / 2`, and the head contributes nothing extra because it is drawn *backwards*
+from the `to` point. So a correctly-clamped arrow ends in a flat cut against the crop edge rather
+than a taper — cosmetic, not a data loss, and matching the user's "that's fine". **No change made**;
+if you ever want it, insetting the clamp by `lineWidth / 2` would do it, at the cost of arrows no
+longer quite reaching the edge.
+
+### New tests
+
+- `testTextTypedNearTheRightEdgeIsWholeInTheExport` — asserts on exported pixels, using the same
+  string placed comfortably inside as the yardstick, so a truncated edge case shows up as narrower
+  ink regardless of coordinates
+- `testTextTypedNearTheBottomEdgeIsWholeInTheExport`
+- `testStringWiderThanTheVisibleImageClipsIdenticallyInEditorAndExport`
+
+Helpers added: `useLargeDocument()` (the 120×80 setUp document cannot hold a 24 px font, so every
+string there would be over-wide and the interesting cases would collapse), `redInkBounds`,
+`exportedInk`, `exportedInkForTextNear`, and a `width`/`height` parameter on `makeImage`.
+
+### Mutation check
+
+Extent handling removed — `textSize` replaced with `.zero`, leaving the previous origin-only clamp:
+`** TEST FAILED **`, with
+
+- `testTextTypedNearTheRightEdgeIsWholeInTheExport`: ink width **25 px against the interior
+  baseline's 125**, and ink running to the last column (599 of 600);
+- `testTextTypedNearTheBottomEdgeIsWholeInTheExport`: ink height **2 against 17**, running to the
+  last row.
+
+Every interior-placement test, including `testCommittedTextLandsWhereTheEditorDrewIt`, still
+passed. That is the discrimination asked for: the fix moves text that would overflow and leaves
+text that fits exactly where it was.
+
+### A concurrent failure I diagnosed but did not touch
+
+Mid-validation `AnnotationRenderer.swift` stopped compiling (`cannot find 'TextLayout' in scope`),
+and once it built again, three of my Repair-4 parity tests failed by 1.5–3.5 pt — alongside Task 4's
+own `testTextSizeMatchesWhatDrawTextPaints` failing on the same root cause (their renderer was
+painting narrower than `textSize` reported).
+
+Rather than widen my tolerances — which would have buried a real parity regression — I probed:
+with my `usesSingleLineMode`/`.byClipping` change temporarily reverted, those three tests failed
+with **identical numbers** (134.5 vs 133.0, 135.0 vs 133.0, 272.5 vs 269.0), proving the cause was
+in Task 4's file and not mine. I left their file alone, waited for their repair to land, and all
+three went green on their own.
+
+### Validation (real exit codes, final state)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **174 tests, 0 failures** |
+
+Everything preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text
+position/size parity, `fitEditor` tracking geometry, per-tool cursors, and the letterbox hairlines.

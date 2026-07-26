@@ -484,3 +484,154 @@ deleted `testTextCarriesAContrastingOutline`, +1 for the added
 to Repair 2. No failure appeared in `GlobalHotkeyManager.swift`, `AppCoordinator.swift` or any
 settings file during these runs, so I had nothing to report from the concurrent hotkey work.
 The app was not launched.
+
+---
+
+## Feature — multi-line and wrapped text rendering
+
+### New signatures (exactly as specified)
+
+```swift
+static func textSize(for string: String, style: AnnotationStyle, maxWidth: CGFloat?) -> CGSize
+static func drawText(_ string: String,
+                     at origin: CGPoint,
+                     style: AnnotationStyle,
+                     maxWidth: CGFloat?,
+                     in context: NSGraphicsContext,
+                     scale: CGFloat)
+```
+
+`textSize(for:style:)` now delegates with `maxWidth: nil`, and the `.text` case in `draw`
+routes through `drawText(..., maxWidth: nil)`, so there is one text implementation. Both
+changes are behaviour-preserving — see the causality note below for the evidence.
+`SnapshotExporter.swift` was not touched.
+
+### Layout API: TextKit 1, and why
+
+`NSTextStorage` + `NSLayoutManager` + `NSTextContainer` (private `TextLayout` in
+`AnnotationRenderer.swift`), with `lineBreakMode = .byWordWrapping`,
+`maximumNumberOfLines = 0` and `lineFragmentPadding = 0`. These are the objects an
+`NSTextView` drives natively, so an editor built on one breaks lines where this does; hand-
+rolled measurement could only approximate it. Two facts I verified rather than assumed:
+
+- `NSLayoutManager.usedRect(for:)` with zero padding equals `NSAttributedString.size()`
+  exactly — for single-line, multi-line and empty strings — so re-routing `textSize` changed
+  no measured value. That is what lets the pre-existing
+  `XCTAssertEqual(measured, NSAttributedString(...).size())` assertion pass untouched.
+- **The editor must set `lineFragmentPadding = 0` too.** `NSTextView` defaults it to 5
+  points, which would silently narrow the wrap width by 10 and break lines earlier than the
+  render does. This is the one integration requirement I am handing to whoever builds the
+  editor.
+
+Line spacing comes from the font's own metrics, so it scales with `style.fontSize` with no
+separate absolute value to keep in step — the same reasoning as the old `.strokeWidth` choice.
+
+### Deviation from the prescribed mechanism, with the measurement that forced it
+
+The brief said to multiply `maxWidth` by `scale` at draw time, as for line widths and fonts.
+**That mechanism cannot satisfy the guarantee the brief calls most important**, and I measured
+it before deciding. Glyph advances are not linear in point size, so the same string laid out
+at 36 pt / 200 px and at 18 pt / 100 px breaks differently:
+
+```
+scale 1.0 (36pt / 200px): ["The quick ", "brown fox ", "jumps over ", "the lazy dog"]
+scale 0.5 (18pt / 100px): ["The quick ", "brown fox ", "jumps over ", "the lazy ", "dog"]
+```
+
+Four lines versus five. Under that mechanism the canvas preview and the export would break
+text differently and the agent would receive something the user never saw.
+
+So `drawText` decides **where lines break once, in image pixels**, and then draws each
+resulting line at the scaled font size:
+
+- breaking in image pixels makes line breaks identical at every scale (preview == export);
+- drawing each line with the scaled font keeps glyph placement identical to the live editor,
+  which lays out at that size.
+
+Line origins come from the image-pixel layout and are multiplied by `scale`, so the vertical
+rhythm is scale-invariant too. `maxWidth` remains an image-pixel value, as required.
+
+**Causality note — this deviation was not free, and I checked it both ways.** My first
+implementation laid the whole block out in image pixels and applied `scale` to the CTM. That
+is cleaner, but it broke three of Task 5's tests
+(`testCommittedTextLandsWhereTheEditorDrewIt`,
+`testTextEditLiveAcrossAResizeCommitsAtTheSizeTheEditorWasShowing`,
+`testTextEditLiveAcrossACropCommitsAtTheSizeTheEditorWasShowing`) by 1.5–3.5 px, because
+`NSTextField` lays out at the scaled font size and CTM-scaling an image-pixel layout does not
+reproduce that. I confirmed the cause by temporarily restoring the old drawing and watching
+all three failures disappear, then adopted the split above, which keeps them passing. Note
+that at `scale: 1.0` — every export — all three approaches are identical; the difference only
+exists in the canvas preview.
+
+**Follow-up for the lead, not implemented:** the fully coherent end state is for the editor to
+lay out in image-pixel metrics inside a scaled view, at which point `drawText` could go back
+to one CTM-scaled layout and editor, preview and export would agree by construction rather
+than to within a pixel. That is a change to `AnnotationCanvasView.swift`, which I do not own.
+
+### An over-long word
+
+TextKit breaks a word that cannot fit **between characters** rather than overflowing or
+clipping: "Supercalifragilisticexpialidocious" at 36 pt with `maxWidth: 100` measures
+(97.7 × 258) — six lines, none wider than the wrap width. So painted text never crosses
+`maxWidth`, however long a single word is. `testWordLongerThanMaxWidthIsBrokenBetweenCharacters`
+asserts exactly that.
+
+### New tests (all in `AnnotationRendererTests`)
+
+- `testExplicitNewlineRendersOnSeparateLines` — two ink bands, zero ink in the gap between
+  them, both lines in the same columns, and `textSize` accounting for both lines.
+- `testTextWrapsAtMaxWidth` — wrapped ink is taller than unwrapped, no ink crosses the wrap
+  width, unwrapped is a single band.
+- `testTextSizeMatchesWhatDrawTextPaints` — the measured height is a whole number of lines,
+  every one of those line boxes contains ink, the box after the last does not, and the ink is
+  contained in the measured box.
+- `testWrappedTextBreaksAtTheSameWordBoundariesAtEveryScale` — the WYSIWYG guarantee.
+- `testWordLongerThanMaxWidthIsBrokenBetweenCharacters`.
+- `testDegenerateTextInputsAreSafe` — empty string, and `maxWidth` of 0, negative, infinite
+  and NaN all mean "do not wrap" rather than "collapse to nothing"; drawing them paints
+  without trapping.
+
+Two test-helper honesty notes, both of which cost me a false green or a false red:
+
+- `RenderPixelBuffer.inkLineBands()` counts runs of inked rows, which is **not** the same as
+  text lines: "jumps over" has no ascenders, so the dot of the "j" forms its own band. Tests
+  that need typographic lines now slice by row window with the new `inkColumns(inRows:)`,
+  which addresses a line by where its line box is and needs no guess about gap sizes. I first
+  tried merging bands by a gap threshold and rejected it — a threshold big enough to swallow
+  the "j" dot also merged real lines.
+- `testTextSizeMatchesWhatDrawTextPaints` allows horizontal ink to exceed the typographic box
+  by up to a tenth of the font size. That is not slack for convenience: the sample's "jumps"
+  starts a line and the "j" has a negative left side bearing, measured at 2 px of ink left of
+  the box at 36 pt. Vertical containment is asserted tightly (±1 px), where no such overhang
+  exists.
+
+### Scale-invariance mutation check
+
+Mutation: decide the wrap at the scaled size — `maxWidth * scale` with the font also scaled,
+i.e. the mechanism the brief originally prescribed. Result:
+
+```
+testWrappedTextBreaksAtTheSameWordBoundariesAtEveryScale
+  : XCTAssertEqualWithAccuracy failed: ("140.0") is not equal to ("202.0") +/- ("10.0") - line 3 right edge
+  : XCTAssertNil failed: "6...35"
+```
+
+The 62 px right-edge difference is exactly the word "dog" moving to a fifth line, and the
+`XCTAssertNil` is that fifth line's ink appearing below the last line box at half scale. The
+10 px tolerance did not absorb a 62 px word, which is the point of choosing it below the
+narrowest word in the sample. No other test failed under the mutation — Task 5's editor tests
+are single-line and unaffected — so the guarantee rests on this test alone, and it works.
+The mutation was reverted and the file `diff`-verified against the pre-mutation copy.
+
+### Validation
+
+```
+./scripts/bootstrap.sh   -> 0
+./scripts/build.sh       -> 0     ** BUILD SUCCEEDED **
+./scripts/test.sh        -> 0     ** TEST SUCCEEDED **, Executed 174 tests, 0 failures
+```
+
+Zero Swift warnings (only the pre-existing appintentsmetadataprocessor note). 26 of the 174
+are mine — 14 `AnnotationRendererTests` and 12 `SnapshotExporterTests`. The total is 174
+rather than 165 because other tasks landed tests while I worked; no failure remained anywhere,
+including in the concurrently edited `AnnotationCanvasView.swift` / `AnnotationWindowController.swift`.

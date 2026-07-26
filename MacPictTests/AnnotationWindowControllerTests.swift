@@ -69,19 +69,19 @@ final class AnnotationWindowControllerTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeImage() throws -> CGImage {
+    private func makeImage(width: Int = 120, height: Int = 80) throws -> CGImage {
         let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
         let context = try XCTUnwrap(CGContext(
             data: nil,
-            width: 120,
-            height: 80,
+            width: width,
+            height: height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: space,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
         ))
         context.setFillColor(CGColor(srgbRed: 0.3, green: 0.3, blue: 0.3, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return try XCTUnwrap(context.makeImage())
     }
 
@@ -343,6 +343,62 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(origin.x, document.cropRect.minX)
     }
 
+    /// The setUp document is 120×80, far too small to hold a 24 px font, so every string would
+    /// be wider than the image and the interesting cases would collapse into the pinned one.
+    private func useLargeDocument() throws {
+        let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+        controller.annotationDelegate = nil
+        controller.close()
+        delegate = RecordingWindowDelegate()
+        controller = AnnotationWindowController(
+            document: AnnotationDocument(image: try makeImage(width: 1200, height: 800)),
+            screen: screen
+        )
+        controller.annotationDelegate = delegate
+        controller.window?.layoutIfNeeded()
+    }
+
+    /// Bounds of the annotation-coloured ink in an exported image, in that image's pixels.
+    private func redInkBounds(_ image: CGImage) -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
+        let width = image.width
+        let height = image.height
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        return pixels.withUnsafeMutableBytes { raw -> (Int, Int, Int, Int)? in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ), let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            var minX = Int.max, maxX = Int.min, minY = Int.max, maxY = Int.min
+            for y in 0..<height {
+                for x in 0..<width {
+                    let offset = (y * width + x) * 4
+                    guard bytes[offset] > 150, bytes[offset + 1] < 90, bytes[offset + 2] < 90 else { continue }
+                    minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+            return minX <= maxX ? (minX, maxX, minY, maxY) : nil
+        }
+    }
+
+    private func exportedInk(of document: AnnotationDocument) throws -> (minX: Int, maxX: Int, minY: Int, maxY: Int) {
+        let exported = try SnapshotExporter.flatten(
+            image: document.image,
+            annotations: document.annotations,
+            cropRect: document.cropRect
+        )
+        XCTAssertEqual(exported.width, Int(document.cropRect.width))
+        XCTAssertEqual(exported.height, Int(document.cropRect.height))
+        return try XCTUnwrap(redInkBounds(exported), "no annotation ink reached the exported image")
+    }
+
     /// Redrawn into a layout this test controls rather than read raw: the exporter's own
     /// bitmap is premultiplied-first little-endian, and reading its bytes positionally made an
     /// opaque pixel's alpha look like a bright channel — which matched every pixel and made
@@ -568,6 +624,77 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertEqual(committedTexts(), [])
         XCTAssertEqual(delegate.textsWhenNotified, [[]])
         XCTAssertTrue(try canvas().subviews.isEmpty)
+    }
+
+    // MARK: - Text extent inside the crop
+
+    private static let edgeText = "This cannot"
+
+    /// Types `string` starting near a chosen corner of the visible crop and returns the ink
+    /// the export ends up with. The click sits deliberately close to the edge, so a placement
+    /// that only bounds the origin runs the string off the image.
+    private func exportedInkForTextNear(_ anchor: CGPoint, crop: CGRect, string: String) throws -> (minX: Int, maxX: Int, minY: Int, maxY: Int) {
+        let document = controller.document
+        document.crop(to: crop)
+        document.style = AnnotationStyle(color: .red, size: .small)
+        try beginTextEdit(string, atImagePoint: anchor)
+        try canvas().commitTextEditing()
+        XCTAssertEqual(committedTexts(), [string])
+        return try exportedInk(of: document)
+    }
+
+    /// The reported bug: text typed near the right edge of a cropped snapshot came out of the
+    /// export cut off mid-phrase. The assertion is on the exported pixels, and the yardstick is
+    /// the same string placed comfortably inside — if the edge case is truncated its ink is
+    /// narrower, no matter what the coordinates say.
+    func testTextTypedNearTheRightEdgeIsWholeInTheExport() throws {
+        try useLargeDocument()
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+
+        let interior = try exportedInkForTextNear(CGPoint(x: 200, y: 200), crop: crop, string: Self.edgeText)
+        let interiorWidth = interior.maxX - interior.minX
+
+        try useLargeDocument()
+        let edge = try exportedInkForTextNear(CGPoint(x: crop.maxX - 30, y: 200), crop: crop, string: Self.edgeText)
+
+        XCTAssertEqual(edge.maxX - edge.minX, interiorWidth, accuracy: 2, "the string was truncated at the right edge")
+        XCTAssertLessThan(edge.maxX, Int(crop.width) - 1, "the text should come to rest against the edge, not run off it")
+    }
+
+    func testTextTypedNearTheBottomEdgeIsWholeInTheExport() throws {
+        try useLargeDocument()
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+
+        let interior = try exportedInkForTextNear(CGPoint(x: 200, y: 200), crop: crop, string: Self.edgeText)
+        let interiorHeight = interior.maxY - interior.minY
+
+        try useLargeDocument()
+        let edge = try exportedInkForTextNear(CGPoint(x: 200, y: crop.maxY - 8), crop: crop, string: Self.edgeText)
+
+        XCTAssertEqual(edge.maxY - edge.minY, interiorHeight, accuracy: 2, "the string was clipped at the bottom edge")
+        XCTAssertLessThan(edge.maxY, Int(crop.height) - 1, "the text should come to rest against the edge, not run off it")
+    }
+
+    /// Shifting cannot rescue a string wider than the whole visible image, so it clips — but it
+    /// must clip in the same place on screen as in the PNG, or the preview lies again.
+    func testStringWiderThanTheVisibleImageClipsIdenticallyInEditorAndExport() throws {
+        try useLargeDocument()
+        let document = controller.document
+        let crop = CGRect(x: 100, y: 100, width: 220, height: 300)
+        document.crop(to: crop)
+        document.style = AnnotationStyle(color: .red, size: .small)
+        let canvas = try canvas()
+
+        try beginTextEdit("far wider than this narrow crop can ever hold", atImagePoint: CGPoint(x: 110, y: 150))
+        let editorInk = try redInk(of: canvas)
+        let editorRightEdge = canvas.geometry.imagePoint(fromView: CGPoint(x: editorInk.maxX, y: editorInk.midY)).x
+
+        canvas.commitTextEditing()
+        let ink = try exportedInk(of: document)
+        let exportRightEdge = crop.minX + CGFloat(ink.maxX + 1)
+
+        XCTAssertEqual(editorRightEdge, exportRightEdge, accuracy: 4, "editor and export cut the string in different places")
+        XCTAssertEqual(ink.maxX, Int(crop.width) - 1, "an over-wide string should run right up to the crop edge")
     }
 
     // MARK: - Editor / render parity (Repair 4)

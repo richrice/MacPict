@@ -46,9 +46,7 @@ enum AnnotationRenderer {
         case let .ellipse(rect):
             stroke(NSBezierPath(ovalIn: scaled(rect, scale)), style: style, scale: scale)
         case let .text(origin, string):
-            guard !string.isEmpty else { return }
-            let attributed = NSAttributedString(string: string, attributes: textAttributes(for: style, scale: scale))
-            attributed.draw(at: scaled(origin, scale))
+            drawText(string, at: origin, style: style, maxWidth: nil, in: context, scale: scale)
         }
     }
 
@@ -69,7 +67,58 @@ enum AnnotationRenderer {
 
     /// Measured in image pixels, so it measures at `scale: 1.0`.
     static func textSize(for string: String, style: AnnotationStyle) -> CGSize {
-        NSAttributedString(string: string, attributes: textAttributes(for: style, scale: 1.0)).size()
+        textSize(for: string, style: style, maxWidth: nil)
+    }
+
+    /// Size of `string` laid out with the given wrap width, in IMAGE PIXELS.
+    /// `maxWidth` nil means no wrapping — explicit newlines still break lines.
+    static func textSize(for string: String, style: AnnotationStyle, maxWidth: CGFloat?) -> CGSize {
+        TextLayout(string: string, style: style, maxWidth: maxWidth).usedSize
+    }
+
+    /// Draws `string` with its top-left at `origin`, wrapped to `maxWidth` (image pixels,
+    /// nil for none). Same flipped top-left-origin context contract as `draw`.
+    ///
+    /// Where the lines break is decided **once**, in image pixels, and each resulting line is
+    /// then drawn at the scaled font size. Both halves of that are load-bearing:
+    ///
+    /// - Breaking at image-pixel metrics makes the canvas preview and the export break lines
+    ///   identically. Glyph advances are not exactly linear in point size, so a layout
+    ///   recomputed at a scaled font disagrees with itself: "The quick brown fox jumps over
+    ///   the lazy dog" is four lines at 36 pt / 200 px and five at 18 pt / 100 px. The agent
+    ///   would then receive text the user never saw.
+    /// - Drawing each line at the scaled font keeps glyph placement identical to the live
+    ///   editor, which lays out at that size. Committed text must not shift when the user
+    ///   presses Return.
+    static func drawText(
+        _ string: String,
+        at origin: CGPoint,
+        style: AnnotationStyle,
+        maxWidth: CGFloat?,
+        in context: NSGraphicsContext,
+        scale: CGFloat
+    ) {
+        guard !string.isEmpty, scale.isFinite, scale > 0 else { return }
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = context
+        context.saveGraphicsState()
+        defer {
+            context.restoreGraphicsState()
+            NSGraphicsContext.current = previous
+        }
+
+        let attributes = textAttributes(for: style, scale: scale)
+        let source = string as NSString
+        for line in TextLayout(string: string, style: style, maxWidth: maxWidth).lineFragments() {
+            // The fragment's character range carries its terminating newline, which would
+            // otherwise be drawn as a second, empty line.
+            var text = source.substring(with: line.range)
+            while let last = text.last, last.isNewline { text.removeLast() }
+            guard !text.isEmpty else { continue }
+            NSAttributedString(string: text, attributes: attributes).draw(
+                at: CGPoint(x: (origin.x + line.origin.x) * scale, y: (origin.y + line.origin.y) * scale)
+            )
+        }
     }
 
     /// The two barb tips of the head drawn at `to`, in context units. `nil` when the arrow
@@ -126,5 +175,60 @@ enum AnnotationRenderer {
 
     private static func scaled(_ rect: CGRect, _ scale: CGFloat) -> CGRect {
         CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
+    }
+}
+
+/// One TextKit 1 layout, always in image-pixel metrics.
+///
+/// `NSTextStorage` + `NSLayoutManager` + `NSTextContainer` are the objects an `NSTextView`
+/// drives natively, so an editor built on one breaks lines exactly where this does; hand-rolled
+/// measurement could only approximate that, and the editor is meant to be a live preview of
+/// this renderer. A word too long to fit is broken between characters by TextKit rather than
+/// overflowing, so painted text never exceeds `maxWidth`.
+private struct TextLayout {
+    private let storage: NSTextStorage
+    private let manager = NSLayoutManager()
+    private let container: NSTextContainer
+
+    init(string: String, style: AnnotationStyle, maxWidth: CGFloat?) {
+        storage = NSTextStorage(
+            string: string,
+            attributes: AnnotationRenderer.textAttributes(for: style, scale: 1.0)
+        )
+        // A non-positive or non-finite wrap width means "do not wrap" rather than "collapse
+        // to nothing", which is the only reading that cannot silently swallow a user's text.
+        let width: CGFloat
+        if let maxWidth, maxWidth.isFinite, maxWidth > 0 {
+            width = maxWidth
+        } else {
+            width = .greatestFiniteMagnitude
+        }
+        container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        // NSTextView defaults this to 5 points, which would silently narrow the wrap width:
+        // an editor previewing this layout has to zero it too.
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = 0
+        container.lineBreakMode = .byWordWrapping
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+    }
+
+    /// Image pixels. Line spacing comes from the font's own metrics, so it scales with
+    /// `style.fontSize` without a separate absolute value to keep in step.
+    var usedSize: CGSize { manager.usedRect(for: container).size }
+
+    /// One entry per rendered line, in the order they stack downward: the characters on that
+    /// line and the top-left of its line box relative to the text block's origin, in image
+    /// pixels. This is the single place line breaking is decided.
+    func lineFragments() -> [(range: NSRange, origin: CGPoint)] {
+        var fragments: [(range: NSRange, origin: CGPoint)] = []
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { rect, _, _, glyphRange, _ in
+            fragments.append((
+                range: manager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil),
+                origin: rect.origin
+            ))
+        }
+        return fragments
     }
 }

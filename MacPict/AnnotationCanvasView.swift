@@ -17,6 +17,10 @@ final class AnnotationCanvasView: NSView {
     /// A drag shorter than this in view points is a click that missed, not an annotation.
     private static let minimumDragExtent: CGFloat = 3
 
+    /// Enough field to hold a caret when the click lands hard against the right edge and
+    /// nothing has been typed yet; the first keystroke shifts the editor back inside.
+    private static let minimumEditorWidth: CGFloat = 24
+
     /// The surround. Deliberately not black: a dark screenshot against a black letterbox was
     /// the reported bug, and lifting it off pure black gives the drop shadow something to fall
     /// on. It is not the boundary guarantee on its own — `drawImageBoundary` is.
@@ -420,6 +424,8 @@ final class AnnotationCanvasView: NSView {
         field.drawsBackground = false
         field.backgroundColor = .clear
         field.focusRingType = .none
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byClipping
         field.delegate = self
 
         let editing = TextEditing(
@@ -434,19 +440,62 @@ final class AnnotationCanvasView: NSView {
         textEditing = editing
     }
 
-    /// Places and sizes the editor for the geometry in force *now*. Called again from
-    /// `layout()` for the lifetime of the edit, because the editor is a preview of the
-    /// committed annotation and a preview drawn at a stale scale is a lie.
+    /// Where the glyphs actually go, in image pixels: the point the user clicked, pulled back
+    /// so the *whole string* fits inside the visible crop. Clamping the origin alone bounded
+    /// the anchor but not the extent, so a sentence begun legally near the right edge ran past
+    /// it and the export cut it mid-phrase.
+    ///
+    /// `AnnotationRenderer.textSize` is the only measurement taken. Measuring the string a
+    /// second way here would be a second thing that can disagree with what is drawn, which is
+    /// this whole family of bugs.
+    private func glyphOrigin(for string: String, editing: TextEditing, geometry: CanvasGeometry) -> CGPoint {
+        let anchor = CGPoint(
+            x: editing.origin.x + editing.textInset * geometry.imageScale,
+            y: editing.origin.y
+        )
+        guard !string.isEmpty else { return anchor }
+        let source = geometry.sourceRect
+        let size = AnnotationRenderer.textSize(for: string, style: editing.style)
+        // A string wider or taller than the visible image cannot be rescued by shifting: pin it
+        // to the edge and let it clip — identically here and in the export, which is what the
+        // editor width below enforces.
+        return CGPoint(
+            x: min(anchor.x, max(source.minX, source.maxX - size.width)),
+            y: min(anchor.y, max(source.minY, source.maxY - size.height))
+        )
+    }
+
+    /// The string as it will be drawn: trimmed, so the editor and the commit measure the same
+    /// characters and cannot place them differently.
+    private func editedString(of editing: TextEditing) -> String {
+        let raw = editing.field.currentEditor()?.string ?? editing.field.stringValue
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Places and sizes the editor for the geometry and the text in force *now*. Called again
+    /// from `layout()` and on every keystroke, because the editor is a preview of the committed
+    /// annotation and a preview drawn at a stale scale, or running past the crop, is a lie.
     private func fitEditor(_ editing: TextEditing) {
         let geometry = self.geometry
         let font = AnnotationRenderer.font(for: editing.style, scale: 1 / geometry.imageScale)
         editing.field.font = font
-        let origin = geometry.viewPoint(fromImage: editing.origin)
+        let glyph = geometry.viewPoint(fromImage: glyphOrigin(
+            for: editedString(of: editing),
+            editing: editing,
+            geometry: geometry
+        ))
         let height = ceil(font.ascender - font.descender + font.leading) + 4
+        // The editor ends exactly where the export ends, so a string too wide for the crop is
+        // cut in the same place on screen as in the PNG. One inset, for the leading side only:
+        // measured, a `.byClipping` cell runs its glyphs to the frame's trailing edge rather
+        // than reserving padding there, so a second inset would paint 2 pt into the letterbox.
+        // The floor keeps a caret's worth of field when the anchor is hard against the right
+        // edge and nothing has been typed yet.
+        let width = max(Self.minimumEditorWidth, geometry.displayRect.maxX - glyph.x + editing.textInset)
         editing.field.frame = CGRect(
-            x: origin.x,
-            y: origin.y,
-            width: max(80, bounds.maxX - origin.x - 4),
+            x: glyph.x - editing.textInset,
+            y: glyph.y,
+            width: width,
             height: height
         )
     }
@@ -470,20 +519,14 @@ final class AnnotationCanvasView: NSView {
         // Read before the teardown, and prefer the field editor: while an edit is live it is
         // the authoritative copy of what the user has typed.
         let typed = editing.field.currentEditor()?.string ?? editing.field.stringValue
-        // The glyphs' top-left, not the field's: the renderer puts the layout box's corner
-        // exactly on the annotation origin, while the field holds its text `textInset` points
-        // inside the cell. Read from the frame the editor is wearing at this moment, so a
-        // resize or a crop mid-edit commits where the user was last shown the text.
-        // Clamped into the source, because `textInset` shifts the glyph origin right of the
-        // click: measured at 2 pt past a `sourceRect` ending at x=250, which would commit an
-        // annotation the crop has already thrown away. A crop applied mid-edit can move the
-        // field out of the visible region the same way.
-        let origin = geometry.clampToSource(geometry.imagePoint(fromView: CGPoint(
-            x: editing.field.frame.minX + editing.textInset,
-            y: editing.field.frame.minY
-        )))
-        endEditing(editing)
         let string = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The same placement the editor was using, recomputed against the geometry in force
+        // now — so a resize or a crop mid-edit commits where the user was last shown the text,
+        // and the extent-aware shift applies to the committed annotation too. Deriving it from
+        // the shared function rather than reading the field's frame removes the round trip
+        // through `textInset` entirely.
+        let origin = glyphOrigin(for: string, editing: editing, geometry: geometry)
+        endEditing(editing)
         guard !string.isEmpty else { return }
         document.append(Annotation(kind: .text(origin: origin, string: string), style: editing.style))
     }
@@ -516,6 +559,15 @@ extension AnnotationCanvasView: NSTextFieldDelegate {
         default:
             return false
         }
+    }
+
+    /// Re-places the editor on every keystroke: once the string reaches the crop's edge it
+    /// stops growing rightward and starts pushing itself left, the way text scrolls when the
+    /// caret reaches the end of a field — except nothing is hidden, because the whole string
+    /// moves rather than sliding out of a fixed box.
+    func controlTextDidChange(_ obj: Notification) {
+        guard let textEditing else { return }
+        fitEditor(textEditing)
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
