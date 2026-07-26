@@ -74,10 +74,15 @@ struct CanvasGeometry: Equatable, Sendable {
         return CGRect(x: origin.x, y: origin.y, width: rect.width / scale, height: rect.height / scale)
     }
 
-    func clampToImage(_ point: CGPoint) -> CGPoint {
-        CGPoint(
-            x: min(max(point.x, 0), imageSize.width),
-            y: min(max(point.y, 0), imageSize.height)
+    /// Clamps a point into `sourceRect`, the region currently visible and the only one that
+    /// survives cropping into the exported image. Still full-image coordinates: this changes
+    /// the bounds, not the space. A degenerate source has no meaningful bounds to clamp into,
+    /// so the point passes through rather than being forced against an inverted range.
+    func clampToSource(_ point: CGPoint) -> CGPoint {
+        guard isSourceUsable else { return point }
+        return CGPoint(
+            x: min(max(point.x, sourceRect.minX), sourceRect.maxX),
+            y: min(max(point.y, sourceRect.minY), sourceRect.maxY)
         )
     }
 

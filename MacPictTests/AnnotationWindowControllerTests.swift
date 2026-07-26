@@ -259,6 +259,119 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(controller.window).isVisible)
     }
 
+    /// A crop narrower than the canvas letterboxes, and a drag begun in one of those bands must
+    /// land inside the crop — an annotation in the discarded region never reaches the export.
+    func testDragStartedInALetterboxBandStaysInsideTheCrop() throws {
+        controller.window?.layoutIfNeeded()
+        let document = controller.document
+        // Tall and narrow inside a wide canvas: guaranteed bands left and right.
+        document.crop(to: CGRect(x: 40, y: 0, width: 24, height: 80))
+        let canvas = try canvas()
+        let display = canvas.geometry.displayRect
+        XCTAssertGreaterThan(display.minX, 4, "this test needs a real letterbox band to drag from")
+        document.tool = .arrow
+
+        try drag(
+            from: try windowPoint(fromCanvas: CGPoint(x: display.minX / 2, y: display.midY)),
+            to: try windowPoint(fromCanvas: CGPoint(x: display.maxX + display.minX / 2, y: display.midY - 20))
+        )
+
+        let kind = try XCTUnwrap(document.annotations.last?.kind)
+        guard case let .arrow(from, to) = kind else { return XCTFail("expected an arrow, got \(kind)") }
+        for point in [from, to] {
+            XCTAssertTrue(
+                document.cropRect.insetBy(dx: -0.5, dy: -0.5).contains(point),
+                "\(point) is outside the visible crop \(document.cropRect)"
+            )
+        }
+    }
+
+    /// The property the user actually cares about: the arrow they drew is in the image the
+    /// agent receives, rather than in the part the crop threw away.
+    func testAnnotationDrawnFromTheLetterboxBandSurvivesTheExport() throws {
+        controller.window?.layoutIfNeeded()
+        let document = controller.document
+        document.crop(to: CGRect(x: 40, y: 0, width: 24, height: 80))
+        let canvas = try canvas()
+        let display = canvas.geometry.displayRect
+        document.tool = .box
+        document.style = AnnotationStyle(color: .red, size: .large)
+
+        // Entirely inside the left band, and stopping in the middle of it rather than at its
+        // edge — a stroke this thick would otherwise bleed across the boundary and mark the
+        // crop even when the geometry is wrong, which is not what this is testing. Clamped,
+        // the drag collapses onto the crop's left edge and marks the image; unclamped it lands
+        // wholly in the discarded region and the agent receives an unmarked image.
+        XCTAssertGreaterThan(display.minX, 120, "this test needs a wide band to stay clear of the stroke")
+        try drag(
+            from: try windowPoint(fromCanvas: CGPoint(x: display.minX * 0.1, y: display.minY + 10)),
+            to: try windowPoint(fromCanvas: CGPoint(x: display.minX * 0.5, y: display.maxY - 10))
+        )
+        XCTAssertEqual(document.annotations.count, 1)
+
+        let exported = try SnapshotExporter.flatten(
+            image: document.image,
+            annotations: document.annotations,
+            cropRect: document.cropRect
+        )
+        XCTAssertEqual(exported.width, Int(document.cropRect.width))
+        XCTAssertEqual(exported.height, Int(document.cropRect.height))
+        XCTAssertTrue(containsRedInk(exported), "the annotation is missing from the exported image")
+    }
+
+    /// Measured, not assumed: the committed origin is the field's frame shifted right by the
+    /// glyph inset, which put it 2 pt past a `sourceRect` ending at x=250 before this was
+    /// clamped. A text annotation outside the crop is invisible in the export.
+    func testTextPlacedAtTheImageEdgeCommitsInsideTheCrop() throws {
+        controller.window?.layoutIfNeeded()
+        let document = controller.document
+        document.crop(to: CGRect(x: 40, y: 0, width: 24, height: 80))
+        let canvas = try canvas()
+        let display = canvas.geometry.displayRect
+        document.tool = .text
+
+        canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(
+            fromCanvas: CGPoint(x: display.maxX, y: display.midY)
+        )))
+        let field = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextField }.first)
+        field.stringValue = "edge"
+        canvas.commitTextEditing()
+
+        let kind = try XCTUnwrap(document.annotations.last?.kind)
+        guard case let .text(origin, _) = kind else { return XCTFail("expected text, got \(kind)") }
+        XCTAssertLessThanOrEqual(origin.x, document.cropRect.maxX, "text origin escaped the crop")
+        XCTAssertGreaterThanOrEqual(origin.x, document.cropRect.minX)
+    }
+
+    /// Redrawn into a layout this test controls rather than read raw: the exporter's own
+    /// bitmap is premultiplied-first little-endian, and reading its bytes positionally made an
+    /// opaque pixel's alpha look like a bright channel — which matched every pixel and made
+    /// this check pass on any image at all.
+    private func containsRedInk(_ image: CGImage) -> Bool {
+        let width = image.width
+        let height = image.height
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return false }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        return pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
+            for offset in stride(from: 0, to: width * height * 4, by: 4) {
+                // AnnotationColor.red is sRGB (1.0, 0.20, 0.20); the base image is flat grey.
+                if bytes[offset] > 150, bytes[offset + 1] < 90, bytes[offset + 2] < 90 { return true }
+            }
+            return false
+        }
+    }
+
     /// The user's actual complaint: every mode showed the plain arrow, so nothing said which
     /// tool was armed.
     func testNoToolShowsThePlainArrowCursor() {

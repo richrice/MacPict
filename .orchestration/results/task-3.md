@@ -624,3 +624,93 @@ assumptions in the files I own. The one edited assertion is the whole of it.
 
 No failures anywhere, including Task 5's concurrently edited `AnnotationCanvasView.swift` work;
 nothing outside my four files was touched.
+
+---
+
+# Fix — clamp to the visible crop, not the full image
+
+I flagged this exact hazard in Amendment 1, judgement call #2, before the bug shipped; the
+record now closes it.
+
+## The new declaration
+
+`MacPict/CanvasGeometry.swift` — `clampToImage(_:)` **renamed and rebounded**, not added
+alongside, so there is exactly one clamping concept and no second bound to drift:
+
+```swift
+    /// Clamps a point into `sourceRect`, the region currently visible and the only one that
+    /// survives cropping into the exported image. Still full-image coordinates: this changes
+    /// the bounds, not the space. A degenerate source has no meaningful bounds to clamp into,
+    /// so the point passes through rather than being forced against an inverted range.
+    func clampToSource(_ point: CGPoint) -> CGPoint {
+        guard isSourceUsable else { return point }
+        return CGPoint(
+            x: min(max(point.x, sourceRect.minX), sourceRect.maxX),
+            y: min(max(point.y, sourceRect.minY), sourceRect.maxY)
+        )
+    }
+```
+
+Degeneracy reuses the type's existing `isSourceUsable` predicate (finite origin, positive
+finite size, contained in `imageSize`) rather than inventing a second rule, so the clamp can
+never emit NaN or clamp against an inverted range. Note it is gated on the *source* being
+usable rather than on `fitScale`, because clamping does not depend on `viewSize` — a
+pre-layout geometry with a valid crop still clamps correctly.
+
+`imagePoint`, `viewPoint`, `displayRect`, `imageScale`, the crop alignment helpers and the
+full-image storage invariant are all untouched. When uncropped, `sourceRect` is the whole
+image, so behaviour is bit-identical to the old method.
+
+## Tests: 1 renamed, 1 rewritten, 1 added (`CanvasGeometryTests` 17 → 18)
+
+- **Renamed** `testClampToImageBoundsAllFourSides` → `testClampToSourceBoundsAllFourSidesWhenUncropped`.
+  Same seven assertions, unchanged values. This is the regression guard proving the rename
+  changed nothing for the uncropped case.
+- **Rewritten** `testClampToImageStillBoundsToTheFullImageWhenCropped` →
+  `testClampToSourceBoundsToTheCropOnAllFourSides`. The old test asserted the buggy contract
+  literally (`(700, 500)` returned unchanged), so it had to be inverted rather than kept. With
+  a crop inset from every image edge it now asserts all four sides plus both corners clamp to
+  the crop's bounds — a point left of `sourceRect.minX` clamps to `minX`, **not** to 0 — that
+  an interior point and an on-edge point are returned unchanged, and that three dead-band
+  points land within the crop.
+- **Added** `testClampToSourceIsNaNFreeForDegenerateSourceRects` — five degenerate source rects
+  (zero, zero-width, NaN origin, infinite width, overhanging the image), each asserting the
+  result is NaN-free and passes through unchanged.
+
+One self-inflicted failure worth recording: my first version of the dead-band assertion used
+`CGRect.contains`, which is half-open, so a point clamped exactly onto the crop's far corner
+`(300, 300)` was reported as outside. The clamp was correct and my predicate was wrong; I
+replaced it with explicit inclusive bound checks rather than loosening what was being asserted.
+
+## Mutation check
+
+Restored the full-image bounds inside `clampToSource` and ran
+`-only-testing:MacPictTests/CanvasGeometryTests`:
+
+```
+MUTATION_EXIT=65
+Executed 18 tests, with 12 failures (0 unexpected)
+… testClampToSourceBoundsToTheCropOnAllFourSides : XCTAssertEqual failed:
+   ("(50.0, 200.0)") is not equal to ("(100.0, 200.0)") - left
+   ("(700.0, 200.0)") is not equal to ("(300.0, 200.0)") - right
+   ("(200.0, 20.0)")  is not equal to ("(200.0, 100.0)") - top
+   ("(200.0, 500.0)") is not equal to ("(200.0, 300.0)") - bottom
+   ("(0.0, 0.0)")     is not equal to ("(100.0, 100.0)") - top-left corner
+   ("(800.0, 600.0)") is not equal to ("(300.0, 300.0)") - bottom-right corner
+   … plus the three dead-band points reported outside the crop
+```
+
+All 12 failures are inside the crop test; the renamed uncropped test and the degenerate test
+passed, confirming the guard is specific to the bug. Implementation restored and re-verified.
+
+## Validation (real exit codes)
+
+| Command | Exit | Notes |
+|---|---|---|
+| `./scripts/build.sh` (before Task 5's call site landed) | 65 | `AnnotationCanvasView.swift:331: error: value of type 'CanvasGeometry' has no member 'clampToImage'` — the expected transient breakage in Task 5's file. Reported, not touched; I polled until they switched to `clampToSource` at line 332. |
+| `./scripts/bootstrap.sh` | 0 | |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **`, zero Swift `warning:`/`error:` lines |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **162 tests, 0 failures**, whole target. `AnnotationModelTests` 35 passed, `CanvasGeometryTests` 18 passed. Only `warning:` in the log is the usual `appintentsmetadataprocessor` note. |
+
+162 rather than 161 because this change adds one net new test. No `clampToImage` reference
+remains anywhere in the repository.

@@ -732,3 +732,98 @@ not touched and `toolBeforeCrop` was not adjusted.
 | `./scripts/bootstrap.sh` | exit 0 |
 | `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
 | `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **161 tests, 0 failures** (157 + 4) |
+
+---
+
+## Fix — letterbox is drawable-area-ambiguous and swallows annotations
+
+### Item 1 — audit of every view→image conversion site
+
+There are exactly two places a view point becomes an image point. I measured both with a harness
+built from the real sources (400×200 image, crop `(150, 0, 100, 200)` inside a 400×200 canvas, so
+the bands are 150 pt wide either side) before changing anything.
+
+**`imagePoint(for:geometry:)` (the drag path) was already safe.** It clamps the *view* point into
+`displayRect` before converting, and `displayRect` maps onto `sourceRect` exactly, so the result
+was already inside the crop. Measured: a drag begun at view x=20 — deep in the left band — and
+ended at x=380 produced `arrow from (150.0, 100.0) to (250.0, 140.0)`, both on/inside the
+`sourceRect` x-range 150…250. So the reported mechanism ("maps to a point outside `sourceRect` but
+inside the full image, so it is accepted… never appears in the exported PNG") is **not** what the
+code did; the annotation was clamped to the crop edge, not lost. I switched the call to
+`clampToSource` anyway — it is the right invariant to state, `clampToImage` no longer exists, and
+it makes the guarantee independent of the view-space pre-clamp — but it is not the user's bug.
+
+**The text-editor path at line 435 was leaking, exactly as you suspected.** It converted with no
+clamp at all, and the committed origin is the field's frame shifted right by `textInset`. Measured
+on the same geometry: clicking at the right edge of `displayRect` committed
+`text origin = (252.0, 100.0)` against a `sourceRect` ending at **x = 250** — 2 pt outside the
+crop, invisible in the export. A crop applied mid-edit can move the field out of the visible
+region the same way. Now clamped with `clampToSource`.
+
+No other site converts view→image. `fitEditor` and the renderer offset go the other way
+(`viewPoint(fromImage:)`), and `drawCropOverlay` converts an already-clamped image rect.
+
+### Item 2 — the boundary treatment
+
+Chosen: **two adjacent hairlines straddling the edge** — white at 85 % just outside, black at 55 %
+just inside — over a surround lifted off pure black to `NSColor(white: 0.16)`, with a soft drop
+shadow (12 pt blur, 60 % black) under the image. Fixed tones, not semantic colours: this surface
+sits against arbitrary screenshot pixels, so it must not shift with the system appearance.
+
+The hairline pair is the guarantee; the shadow and the lifted surround are only depth cues. That
+distinction matters, and the renders are why:
+
+- **First render** (`letterbox.png`, pure black / pure white / mid-grey, light and dark
+  appearance): boundary visible in all six. But the test set was wrong — none of the images had an
+  edge tone matching the surround, which is *precisely* the user's bug ("those bars are the same
+  background color as the little image I captured"). Passing that set proved little.
+- **Second render** (`letterbox-evidence-zoom.png`, 6× zoom straddling the left boundary, with a
+  fourth case whose image tone is exactly the surround's 0.16): all four rows show an unambiguous
+  edge, including the adversarial one, where the surround and the image are indistinguishable in
+  tone and the hairline alone carries the boundary. That render is the evidence for the design.
+
+The light and dark rows are pixel-identical, as intended.
+
+Rejected: a flat surround colour on its own (the brief forbids it and it is the bug); shadow alone
+(invisible when a black image sits on a dark surround — it fails the black case outright); a
+checkerboard or hatch (never tried past sketching: it competes with the screenshot for attention,
+and the hairline already meets the bar at a fraction of the visual noise). The letterbox itself is
+not removable — the toolbar's ~819 pt fitting width floors the window at 840 pt content width, so
+a narrow crop always letterboxes, and the window is not resized below that.
+
+### New tests
+
+- `testDragStartedInALetterboxBandStaysInsideTheCrop`
+- `testAnnotationDrawnFromTheLetterboxBandSurvivesTheExport` — flattens through `SnapshotExporter`
+  and looks for red ink, i.e. the user-visible property
+- `testTextPlacedAtTheImageEdgeCommitsInsideTheCrop`
+
+### Mutation checks — and two tests that were vacuous until they were not
+
+| Mutation | Result |
+|---|---|
+| **X** — drop `clampToSource` from the drag path, keeping the view-space pre-clamp (i.e. the exact pre-fix behaviour) | `** TEST SUCCEEDED **`. This is the measurement above, restated as a mutation: **the band-drag test does not fail against the pre-fix code**, contrary to the spec's expectation, because the pre-clamp already guaranteed it. |
+| **Y** — drop the clamp on the text origin | `** TEST FAILED **`, `testTextPlacedAtTheImageEdgeCommitsInsideTheCrop`. This is the real defect and it is guarded. |
+| **Z** — drop *both* clamps from the drag path | `** TEST FAILED **`, both `testDragStartedInALetterboxBandStaysInsideTheCrop` and `testAnnotationDrawnFromTheLetterboxBandSurvivesTheExport`. The drag invariant is genuinely tested; it simply has two redundant mechanisms behind it. |
+
+Getting the export test to that state took two corrections, both of which I would have missed by
+inspection:
+
+1. Its pixel check read the exporter's raw bytes positionally, but that bitmap is
+   premultiplied-first little-endian, so an opaque pixel's **alpha** looked like a bright channel
+   and the check matched *every* pixel of *any* image. It now redraws into an sRGB
+   premultiplied-last context this test controls and looks for `r > 150, g < 90, b < 90`.
+2. Even then it passed under mutation Z, because the drag ended at the band's inner edge and a
+   14 px stroke bled across the boundary into the crop. The drag now stops mid-band, clear of the
+   stroke, with an assertion that the band is wide enough for that to mean something.
+
+### Validation (real exit codes, after restore)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **165 tests, 0 failures** |
+
+Everything preserved: the `isClosed` latch, the single `deliver(_:)` path, crop auto-revert, text
+position/size parity, `fitEditor` tracking geometry, and the per-tool cursors.

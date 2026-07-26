@@ -17,6 +17,11 @@ final class AnnotationCanvasView: NSView {
     /// A drag shorter than this in view points is a click that missed, not an annotation.
     private static let minimumDragExtent: CGFloat = 3
 
+    /// The surround. Deliberately not black: a dark screenshot against a black letterbox was
+    /// the reported bug, and lifting it off pure black gives the drop shadow something to fall
+    /// on. It is not the boundary guarantee on its own — `drawImageBoundary` is.
+    private static let letterboxFill = NSColor(white: 0.16, alpha: 1)
+
     private let document: AnnotationDocument
     private let baseImage: NSImage
     private var observers: Set<AnyCancellable> = []
@@ -123,12 +128,26 @@ final class AnnotationCanvasView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current else { return }
-        NSColor.black.setFill()
+        // Fixed tones, not semantic colours: this surface sits against arbitrary screenshot
+        // pixels, so it must look the same in both appearances rather than track the system's.
+        Self.letterboxFill.setFill()
         bounds.fill()
 
         let geometry = self.geometry
         let displayRect = geometry.displayRect
         guard !displayRect.isEmpty else { return }
+
+        // Under the image, so the letterbox reads as a surround the image sits on rather than
+        // as more image. The shadow alone is not the boundary guarantee — see the hairlines.
+        context.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.6)
+        shadow.shadowBlurRadius = 12
+        shadow.shadowOffset = .zero
+        shadow.set()
+        NSColor.black.setFill()
+        NSBezierPath(rect: displayRect).fill()
+        context.restoreGraphicsState()
 
         // Two verified facts drive this call: `from:` is in the image's bottom-left-origin
         // space (so the top-left-origin crop rect has to be flipped into it), and the plain
@@ -163,9 +182,31 @@ final class AnnotationCanvasView: NSView {
         }
         context.restoreGraphicsState()
 
+        drawImageBoundary(displayRect)
+
         if let drag, drag.isCrop {
             drawCropOverlay(for: drag, displayRect: displayRect, geometry: geometry)
         }
+    }
+
+    /// Where the drawable area stops. A drag begun in a letterbox band is clamped to the image
+    /// edge, so the user needs to see that edge — and a flat surround cannot show it, because
+    /// whatever tone it is, some screenshot ends in that tone (the reported bug was exactly a
+    /// dark screenshot against a black surround).
+    ///
+    /// Two adjacent hairlines, light outside and dark inside: content can swallow one of them,
+    /// never both. Verified by rendering the canvas against pure black, pure white and mid-grey
+    /// test images.
+    private func drawImageBoundary(_ displayRect: CGRect) {
+        let outer = NSBezierPath(rect: displayRect.insetBy(dx: -0.5, dy: -0.5))
+        outer.lineWidth = 1
+        NSColor.white.withAlphaComponent(0.85).setStroke()
+        outer.stroke()
+
+        let inner = NSBezierPath(rect: displayRect.insetBy(dx: 0.5, dy: 0.5))
+        inner.lineWidth = 1
+        NSColor.black.withAlphaComponent(0.55).setStroke()
+        inner.stroke()
     }
 
     /// The view's own size-change hook, and how a live editor keeps up with the geometry: a
@@ -320,15 +361,16 @@ final class AnnotationCanvasView: NSView {
         border.stroke()
     }
 
-    /// Clamps into the *visible* image first, so nothing can be drawn into the letterbox or a
-    /// crop be dragged back out beyond what is on screen.
+    /// Clamps into the *visible* image, twice over: into `displayRect` in view space, and into
+    /// `sourceRect` in image space. A point in a letterbox band must not become an annotation
+    /// in the region the crop threw away — that annotation would never reach the export.
     private func imagePoint(for viewPoint: CGPoint, geometry: CanvasGeometry) -> CGPoint {
         let display = geometry.displayRect
         let bounded = CGPoint(
             x: min(max(viewPoint.x, display.minX), display.maxX),
             y: min(max(viewPoint.y, display.minY), display.maxY)
         )
-        return geometry.clampToImage(geometry.imagePoint(fromView: bounded))
+        return geometry.clampToSource(geometry.imagePoint(fromView: bounded))
     }
 
     private func rect(from: CGPoint, to: CGPoint) -> CGRect {
@@ -432,10 +474,14 @@ final class AnnotationCanvasView: NSView {
         // exactly on the annotation origin, while the field holds its text `textInset` points
         // inside the cell. Read from the frame the editor is wearing at this moment, so a
         // resize or a crop mid-edit commits where the user was last shown the text.
-        let origin = geometry.imagePoint(fromView: CGPoint(
+        // Clamped into the source, because `textInset` shifts the glyph origin right of the
+        // click: measured at 2 pt past a `sourceRect` ending at x=250, which would commit an
+        // annotation the crop has already thrown away. A crop applied mid-edit can move the
+        // field out of the visible region the same way.
+        let origin = geometry.clampToSource(geometry.imagePoint(fromView: CGPoint(
             x: editing.field.frame.minX + editing.textInset,
             y: editing.field.frame.minY
-        ))
+        )))
         endEditing(editing)
         let string = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !string.isEmpty else { return }

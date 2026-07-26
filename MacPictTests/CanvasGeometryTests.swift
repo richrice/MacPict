@@ -144,16 +144,16 @@ final class CanvasGeometryTests: XCTestCase {
         }
     }
 
-    func testClampToImageBoundsAllFourSides() {
+    func testClampToSourceBoundsAllFourSidesWhenUncropped() {
         let geometry = CanvasGeometry(imageSize: CGSize(width: 800, height: 600), viewSize: CGSize(width: 400, height: 400))
 
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: -12, y: 300)), CGPoint(x: 0, y: 300), "left")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 900, y: 300)), CGPoint(x: 800, y: 300), "right")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 400, y: -5)), CGPoint(x: 400, y: 0), "top")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 400, y: 601)), CGPoint(x: 400, y: 600), "bottom")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: -1, y: -1)), .zero, "top-left corner")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 1000, y: 1000)), CGPoint(x: 800, y: 600), "bottom-right corner")
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 123.5, y: 45.25)), CGPoint(x: 123.5, y: 45.25), "interior")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: -12, y: 300)), CGPoint(x: 0, y: 300), "left")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 900, y: 300)), CGPoint(x: 800, y: 300), "right")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 400, y: -5)), CGPoint(x: 400, y: 0), "top")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 400, y: 601)), CGPoint(x: 400, y: 600), "bottom")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: -1, y: -1)), .zero, "top-left corner")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 1000, y: 1000)), CGPoint(x: 800, y: 600), "bottom-right corner")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 123.5, y: 45.25)), CGPoint(x: 123.5, y: 45.25), "interior")
     }
 
     func testTwoArgumentInitialiserUsesTheFullImageAsItsSource() {
@@ -278,14 +278,53 @@ final class CanvasGeometryTests: XCTestCase {
         }
     }
 
-    func testClampToImageStillBoundsToTheFullImageWhenCropped() {
+    func testClampToSourceBoundsToTheCropOnAllFourSides() {
+        // The crop is inset from every image edge, so clamping to the full image instead of
+        // the source would let a drag land in a region the export throws away.
+        let source = CGRect(x: 100, y: 100, width: 200, height: 200)
         let geometry = CanvasGeometry(
             imageSize: CGSize(width: 800, height: 600),
-            sourceRect: CGRect(x: 100, y: 100, width: 200, height: 200),
+            sourceRect: source,
             viewSize: CGSize(width: 400, height: 400)
         )
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 700, y: 500)), CGPoint(x: 700, y: 500))
-        XCTAssertEqual(geometry.clampToImage(CGPoint(x: 900, y: -3)), CGPoint(x: 800, y: 0))
+
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 50, y: 200)), CGPoint(x: source.minX, y: 200), "left")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 700, y: 200)), CGPoint(x: source.maxX, y: 200), "right")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 200, y: 20)), CGPoint(x: 200, y: source.minY), "top")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 200, y: 500)), CGPoint(x: 200, y: source.maxY), "bottom")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: -5, y: -5)), CGPoint(x: source.minX, y: source.minY), "top-left corner")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 900, y: 900)), CGPoint(x: source.maxX, y: source.maxY), "bottom-right corner")
+
+        // Points already inside the visible region are untouched.
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 150.5, y: 180.25)), CGPoint(x: 150.5, y: 180.25), "interior")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: source.minX, y: source.maxY)), CGPoint(x: 100, y: 300), "on the edge")
+
+        // The whole point of the change: a dead-band drag no longer lands outside the crop.
+        // Bounds are inclusive here — CGRect.contains is half-open and would reject a point
+        // clamped onto the crop's far edge, which is a legitimate result.
+        for point in [CGPoint(x: 700, y: 500), CGPoint(x: 0, y: 0), CGPoint(x: 799, y: 599)] {
+            let clamped = geometry.clampToSource(point)
+            XCTAssertTrue(clamped.x >= source.minX && clamped.x <= source.maxX, "\(point) x outside the crop")
+            XCTAssertTrue(clamped.y >= source.minY && clamped.y <= source.maxY, "\(point) y outside the crop")
+        }
+    }
+
+    func testClampToSourceIsNaNFreeForDegenerateSourceRects() {
+        let imageSize = CGSize(width: 800, height: 600)
+        let viewSize = CGSize(width: 400, height: 300)
+        for sourceRect in [
+            CGRect.zero,
+            CGRect(x: 100, y: 100, width: 0, height: 200),
+            CGRect(x: CGFloat.nan, y: 0, width: 200, height: 200),
+            CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 200),
+            CGRect(x: 700, y: 0, width: 200, height: 200)
+        ] {
+            let geometry = CanvasGeometry(imageSize: imageSize, sourceRect: sourceRect, viewSize: viewSize)
+            let clamped = geometry.clampToSource(CGPoint(x: 42, y: 24))
+            XCTAssertFalse(clamped.x.isNaN, "\(sourceRect)")
+            XCTAssertFalse(clamped.y.isNaN, "\(sourceRect)")
+            XCTAssertEqual(clamped, CGPoint(x: 42, y: 24), "\(sourceRect)")
+        }
     }
 
     func testEquatableUsesBothStoredSizes() {
