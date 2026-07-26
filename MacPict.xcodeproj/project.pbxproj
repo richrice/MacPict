@@ -1,0 +1,548 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0322DAF46DFF29DF1C03137C /* ScreenCaptureKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */; };
+		14561E9EA0B61F063470FA2F /* CoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A2C5C0FC6E652C5B17CEAD /* CoordinatorTests.swift */; };
+		22A0A065B8416326155C0946 /* AnnotationWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDEA1BCFCEC0A2835ACBD345 /* AnnotationWindowController.swift */; };
+		299C0FFDADE5E9232898C7A3 /* AnnotationWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFE39A212AC54D526CAFE182 /* AnnotationWindowControllerTests.swift */; };
+		2D1F83B0CF2EA94496BD3BD9 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */; };
+		5C194D40360BF8435F8E0B1B /* DeliveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 248925E80546E067638998E0 /* DeliveryService.swift */; };
+		5D3F15D6777C7EE87666259D /* SnapshotExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839DFC20B760A7EC26D2470C /* SnapshotExporter.swift */; };
+		606920603947755838500C3F /* AnnotationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED0F95D3D4EABB200B2CFDD1 /* AnnotationModelTests.swift */; };
+		68B4F59EE5447AC54897D6F5 /* AnnotationRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A984EC07CCF06ACC6AEA4383 /* AnnotationRenderer.swift */; };
+		71D1AACF73425996F33E5B9A /* MacPictApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0BB6D3BE8F3038142FAB1E6 /* MacPictApp.swift */; };
+		72C8BBC5BC4E0E5D6D4D4303 /* ScreenCaptureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2352E804FBDEE6E3186E42E1 /* ScreenCaptureServiceTests.swift */; };
+		73CF32FBB49DBF6F9CBBE996 /* AppKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D55E2B520737C1C30EC573CB /* AppKit.framework */; };
+		7F2E230F87681C3D038DA7F2 /* AnnotationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF645E8F3B0F4F908443FE4 /* AnnotationModel.swift */; };
+		7F7322E215B9B4D719E202FE /* GlobalHotkeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0349F051EA365A478DD504B /* GlobalHotkeyManager.swift */; };
+		7FD96FA24986693A9F7D0FFC /* AppLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1941659D778E77AE92551D9 /* AppLoggerTests.swift */; };
+		9328E4218E6E8B4ECBAD4C0A /* DisplayLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB04A46399CEDC07104FDD9 /* DisplayLocatorTests.swift */; };
+		ADE7CD373CAAE447316F028C /* CanvasGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90AB16D78B13E2A178428505 /* CanvasGeometryTests.swift */; };
+		B0524E8B22FA30512DBE8290 /* ScreenCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDB40623BB9058167245DF5 /* ScreenCaptureService.swift */; };
+		B13F7E99DC5F8FF6AE2D8FF7 /* AnnotationToolbarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 900EE8EE44EF792EC3DB761D /* AnnotationToolbarView.swift */; };
+		C6FBB11BAC6DEA42FC48BCA1 /* DeliveryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB4952A4060F8D39BA52119 /* DeliveryServiceTests.swift */; };
+		CAA040C23C13A08E2782FC4D /* AnnotationRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CF07CA17E55E48E159D1808 /* AnnotationRendererTests.swift */; };
+		CE01A499D92A394AD46C067E /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32E7E5483DACE7BADA75E643 /* AppLogger.swift */; };
+		CE28C24B9EC1047EA85A29A9 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 185A207AEC3DAF7949B75E82 /* Carbon.framework */; };
+		D1859900D87327CBB36C7337 /* CanvasGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D736FA2317E40489A522EF3 /* CanvasGeometry.swift */; };
+		D442135C2E991768A8120CB2 /* HotkeyShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB013D96BFB7181D271D549C /* HotkeyShortcutTests.swift */; };
+		EFBB3428CBAED55687A59B8D /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 255F85E75EEFB3D2BBD1097F /* AppCoordinator.swift */; };
+		F0314C287FFA3D0D9987D831 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 775D528949D6878A0A66C355 /* UniformTypeIdentifiers.framework */; };
+		F1521E9ED7B44EA315386637 /* SnapshotExporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3958934DD2B68F02576437F0 /* SnapshotExporterTests.swift */; };
+		F5C84A5A875EC8CDE0F17DE3 /* AnnotationCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9D39A193A6173D23A13B57 /* AnnotationCanvasView.swift */; };
+		F674377E6B548D88A53E626D /* DisplayLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A5BADAC97A498E05C83E18 /* DisplayLocator.swift */; };
+		FD00476D962FC5CF78C61E43 /* ScreenCapturePermission.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB283E0790CA64CD57671894 /* ScreenCapturePermission.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		98944E17054CFBF7E88DC0C9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 616032E72707594AD150958D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9C40B36463D8F6CADA198E47;
+			remoteInfo = MacPict;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0CB4952A4060F8D39BA52119 /* DeliveryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryServiceTests.swift; sourceTree = "<group>"; };
+		185A207AEC3DAF7949B75E82 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
+		2352E804FBDEE6E3186E42E1 /* ScreenCaptureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureServiceTests.swift; sourceTree = "<group>"; };
+		2431BD255A008BCD0DB513C9 /* MacPict.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacPict.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		248925E80546E067638998E0 /* DeliveryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryService.swift; sourceTree = "<group>"; };
+		255F85E75EEFB3D2BBD1097F /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		32E7E5483DACE7BADA75E643 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
+		3958934DD2B68F02576437F0 /* SnapshotExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotExporterTests.swift; sourceTree = "<group>"; };
+		54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = SDKROOT; };
+		6D736FA2317E40489A522EF3 /* CanvasGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGeometry.swift; sourceTree = "<group>"; };
+		775D528949D6878A0A66C355 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
+		839DFC20B760A7EC26D2470C /* SnapshotExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotExporter.swift; sourceTree = "<group>"; };
+		8BDB40623BB9058167245DF5 /* ScreenCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureService.swift; sourceTree = "<group>"; };
+		8CF07CA17E55E48E159D1808 /* AnnotationRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationRendererTests.swift; sourceTree = "<group>"; };
+		900EE8EE44EF792EC3DB761D /* AnnotationToolbarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationToolbarView.swift; sourceTree = "<group>"; };
+		90AB16D78B13E2A178428505 /* CanvasGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGeometryTests.swift; sourceTree = "<group>"; };
+		9DB04A46399CEDC07104FDD9 /* DisplayLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayLocatorTests.swift; sourceTree = "<group>"; };
+		A0BB6D3BE8F3038142FAB1E6 /* MacPictApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPictApp.swift; sourceTree = "<group>"; };
+		A984EC07CCF06ACC6AEA4383 /* AnnotationRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationRenderer.swift; sourceTree = "<group>"; };
+		BBF645E8F3B0F4F908443FE4 /* AnnotationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationModel.swift; sourceTree = "<group>"; };
+		BFE39A212AC54D526CAFE182 /* AnnotationWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationWindowControllerTests.swift; sourceTree = "<group>"; };
+		C1A5BADAC97A498E05C83E18 /* DisplayLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayLocator.swift; sourceTree = "<group>"; };
+		C5A2C5C0FC6E652C5B17CEAD /* CoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoordinatorTests.swift; sourceTree = "<group>"; };
+		CB283E0790CA64CD57671894 /* ScreenCapturePermission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCapturePermission.swift; sourceTree = "<group>"; };
+		D1941659D778E77AE92551D9 /* AppLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLoggerTests.swift; sourceTree = "<group>"; };
+		D55E2B520737C1C30EC573CB /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
+		D607AC290F7AEB7BDEEFB158 /* MacPictTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacPictTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		ED0F95D3D4EABB200B2CFDD1 /* AnnotationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationModelTests.swift; sourceTree = "<group>"; };
+		ED9D39A193A6173D23A13B57 /* AnnotationCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationCanvasView.swift; sourceTree = "<group>"; };
+		EDEA1BCFCEC0A2835ACBD345 /* AnnotationWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationWindowController.swift; sourceTree = "<group>"; };
+		EE94560A2CB1B4B645D7B5E3 /* MacPict.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MacPict.entitlements; sourceTree = "<group>"; };
+		F0349F051EA365A478DD504B /* GlobalHotkeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotkeyManager.swift; sourceTree = "<group>"; };
+		FB013D96BFB7181D271D549C /* HotkeyShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyShortcutTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		00A4B3CDA9AB33054628D671 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				73CF32FBB49DBF6F9CBBE996 /* AppKit.framework in Frameworks */,
+				CE28C24B9EC1047EA85A29A9 /* Carbon.framework in Frameworks */,
+				2D1F83B0CF2EA94496BD3BD9 /* CoreGraphics.framework in Frameworks */,
+				0322DAF46DFF29DF1C03137C /* ScreenCaptureKit.framework in Frameworks */,
+				F0314C287FFA3D0D9987D831 /* UniformTypeIdentifiers.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0DC49B28B9B845C5314D1049 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2431BD255A008BCD0DB513C9 /* MacPict.app */,
+				D607AC290F7AEB7BDEEFB158 /* MacPictTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		77334F23AE3EAC1BD3F828D7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D55E2B520737C1C30EC573CB /* AppKit.framework */,
+				185A207AEC3DAF7949B75E82 /* Carbon.framework */,
+				54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */,
+				6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */,
+				775D528949D6878A0A66C355 /* UniformTypeIdentifiers.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		94C933A6F20D9C81D7323792 = {
+			isa = PBXGroup;
+			children = (
+				F40EE761345CD62348F1ABE0 /* MacPict */,
+				A0B2AF68FB3D66B6F3517543 /* MacPictTests */,
+				77334F23AE3EAC1BD3F828D7 /* Frameworks */,
+				0DC49B28B9B845C5314D1049 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A0B2AF68FB3D66B6F3517543 /* MacPictTests */ = {
+			isa = PBXGroup;
+			children = (
+				ED0F95D3D4EABB200B2CFDD1 /* AnnotationModelTests.swift */,
+				8CF07CA17E55E48E159D1808 /* AnnotationRendererTests.swift */,
+				BFE39A212AC54D526CAFE182 /* AnnotationWindowControllerTests.swift */,
+				D1941659D778E77AE92551D9 /* AppLoggerTests.swift */,
+				90AB16D78B13E2A178428505 /* CanvasGeometryTests.swift */,
+				C5A2C5C0FC6E652C5B17CEAD /* CoordinatorTests.swift */,
+				0CB4952A4060F8D39BA52119 /* DeliveryServiceTests.swift */,
+				9DB04A46399CEDC07104FDD9 /* DisplayLocatorTests.swift */,
+				FB013D96BFB7181D271D549C /* HotkeyShortcutTests.swift */,
+				2352E804FBDEE6E3186E42E1 /* ScreenCaptureServiceTests.swift */,
+				3958934DD2B68F02576437F0 /* SnapshotExporterTests.swift */,
+			);
+			path = MacPictTests;
+			sourceTree = "<group>";
+		};
+		F40EE761345CD62348F1ABE0 /* MacPict */ = {
+			isa = PBXGroup;
+			children = (
+				ED9D39A193A6173D23A13B57 /* AnnotationCanvasView.swift */,
+				BBF645E8F3B0F4F908443FE4 /* AnnotationModel.swift */,
+				A984EC07CCF06ACC6AEA4383 /* AnnotationRenderer.swift */,
+				900EE8EE44EF792EC3DB761D /* AnnotationToolbarView.swift */,
+				EDEA1BCFCEC0A2835ACBD345 /* AnnotationWindowController.swift */,
+				255F85E75EEFB3D2BBD1097F /* AppCoordinator.swift */,
+				32E7E5483DACE7BADA75E643 /* AppLogger.swift */,
+				6D736FA2317E40489A522EF3 /* CanvasGeometry.swift */,
+				248925E80546E067638998E0 /* DeliveryService.swift */,
+				C1A5BADAC97A498E05C83E18 /* DisplayLocator.swift */,
+				F0349F051EA365A478DD504B /* GlobalHotkeyManager.swift */,
+				EE94560A2CB1B4B645D7B5E3 /* MacPict.entitlements */,
+				A0BB6D3BE8F3038142FAB1E6 /* MacPictApp.swift */,
+				CB283E0790CA64CD57671894 /* ScreenCapturePermission.swift */,
+				8BDB40623BB9058167245DF5 /* ScreenCaptureService.swift */,
+				839DFC20B760A7EC26D2470C /* SnapshotExporter.swift */,
+			);
+			path = MacPict;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9C40B36463D8F6CADA198E47 /* MacPict */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1D13AFEE77DEC59B71C3EDBD /* Build configuration list for PBXNativeTarget "MacPict" */;
+			buildPhases = (
+				F001E9486FE92E380C3C67BE /* Sources */,
+				00A4B3CDA9AB33054628D671 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MacPict;
+			packageProductDependencies = (
+			);
+			productName = MacPict;
+			productReference = 2431BD255A008BCD0DB513C9 /* MacPict.app */;
+			productType = "com.apple.product-type.application";
+		};
+		ECC67C72049978353E89E93A /* MacPictTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9CD558E7F03D471D075DECC6 /* Build configuration list for PBXNativeTarget "MacPictTests" */;
+			buildPhases = (
+				47C10886FD3188F5FB6687A9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7A304DAC96FE28205343F118 /* PBXTargetDependency */,
+			);
+			name = MacPictTests;
+			packageProductDependencies = (
+			);
+			productName = MacPictTests;
+			productReference = D607AC290F7AEB7BDEEFB158 /* MacPictTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		616032E72707594AD150958D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9C40B36463D8F6CADA198E47 = {
+						DevelopmentTeam = M3TWZT9C7B;
+						ProvisioningStyle = Automatic;
+					};
+					ECC67C72049978353E89E93A = {
+						DevelopmentTeam = M3TWZT9C7B;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 472E2D7839704D8EDA3F72B9 /* Build configuration list for PBXProject "MacPict" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 94C933A6F20D9C81D7323792;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9C40B36463D8F6CADA198E47 /* MacPict */,
+				ECC67C72049978353E89E93A /* MacPictTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		47C10886FD3188F5FB6687A9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				606920603947755838500C3F /* AnnotationModelTests.swift in Sources */,
+				CAA040C23C13A08E2782FC4D /* AnnotationRendererTests.swift in Sources */,
+				299C0FFDADE5E9232898C7A3 /* AnnotationWindowControllerTests.swift in Sources */,
+				7FD96FA24986693A9F7D0FFC /* AppLoggerTests.swift in Sources */,
+				ADE7CD373CAAE447316F028C /* CanvasGeometryTests.swift in Sources */,
+				14561E9EA0B61F063470FA2F /* CoordinatorTests.swift in Sources */,
+				C6FBB11BAC6DEA42FC48BCA1 /* DeliveryServiceTests.swift in Sources */,
+				9328E4218E6E8B4ECBAD4C0A /* DisplayLocatorTests.swift in Sources */,
+				D442135C2E991768A8120CB2 /* HotkeyShortcutTests.swift in Sources */,
+				72C8BBC5BC4E0E5D6D4D4303 /* ScreenCaptureServiceTests.swift in Sources */,
+				F1521E9ED7B44EA315386637 /* SnapshotExporterTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F001E9486FE92E380C3C67BE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F5C84A5A875EC8CDE0F17DE3 /* AnnotationCanvasView.swift in Sources */,
+				7F2E230F87681C3D038DA7F2 /* AnnotationModel.swift in Sources */,
+				68B4F59EE5447AC54897D6F5 /* AnnotationRenderer.swift in Sources */,
+				B13F7E99DC5F8FF6AE2D8FF7 /* AnnotationToolbarView.swift in Sources */,
+				22A0A065B8416326155C0946 /* AnnotationWindowController.swift in Sources */,
+				EFBB3428CBAED55687A59B8D /* AppCoordinator.swift in Sources */,
+				CE01A499D92A394AD46C067E /* AppLogger.swift in Sources */,
+				D1859900D87327CBB36C7337 /* CanvasGeometry.swift in Sources */,
+				5C194D40360BF8435F8E0B1B /* DeliveryService.swift in Sources */,
+				F674377E6B548D88A53E626D /* DisplayLocator.swift in Sources */,
+				7F7322E215B9B4D719E202FE /* GlobalHotkeyManager.swift in Sources */,
+				71D1AACF73425996F33E5B9A /* MacPictApp.swift in Sources */,
+				FD00476D962FC5CF78C61E43 /* ScreenCapturePermission.swift in Sources */,
+				B0524E8B22FA30512DBE8290 /* ScreenCaptureService.swift in Sources */,
+				5D3F15D6777C7EE87666259D /* SnapshotExporter.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7A304DAC96FE28205343F118 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9C40B36463D8F6CADA198E47 /* MacPict */;
+			targetProxy = 98944E17054CFBF7E88DC0C9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		505E18E577F9F88C9794AD9B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.macpict.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacPict.app/Contents/MacOS/MacPict";
+			};
+			name = Debug;
+		};
+		51D10BD11BC55753C19552A3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacPict/MacPict.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MacPict;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.macpict.app;
+				PRODUCT_NAME = MacPict;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		5E41E263D984927B0A6DBA83 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.macpict.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MacPict.app/Contents/MacOS/MacPict";
+			};
+			name = Release;
+		};
+		DF774B8092A5C79345B4E1B1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = M3TWZT9C7B;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E8B8305C810A803FEED8B081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = M3TWZT9C7B;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		EB3187656BA52FC916DA64F7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = MacPict/MacPict.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = MacPict;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.macpict.app;
+				PRODUCT_NAME = MacPict;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1D13AFEE77DEC59B71C3EDBD /* Build configuration list for PBXNativeTarget "MacPict" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EB3187656BA52FC916DA64F7 /* Debug */,
+				51D10BD11BC55753C19552A3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		472E2D7839704D8EDA3F72B9 /* Build configuration list for PBXProject "MacPict" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DF774B8092A5C79345B4E1B1 /* Debug */,
+				E8B8305C810A803FEED8B081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9CD558E7F03D471D075DECC6 /* Build configuration list for PBXNativeTarget "MacPictTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				505E18E577F9F88C9794AD9B /* Debug */,
+				5E41E263D984927B0A6DBA83 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 616032E72707594AD150958D /* Project object */;
+}

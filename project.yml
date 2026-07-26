@@ -1,0 +1,61 @@
+name: MacPict
+options:
+  bundleIdPrefix: com.macpict
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CLANG_ENABLE_MODULES: YES
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: M3TWZT9C7B
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+targets:
+  MacPict:
+    type: application
+    platform: macOS
+    sources:
+      - path: MacPict
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macpict.app
+        PRODUCT_NAME: MacPict
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: MacPict
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_LSUIElement: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: MacPict/MacPict.entitlements
+    dependencies:
+      - sdk: AppKit.framework
+      - sdk: Carbon.framework
+      - sdk: CoreGraphics.framework
+      - sdk: ScreenCaptureKit.framework
+      - sdk: UniformTypeIdentifiers.framework
+  MacPictTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MacPictTests
+    dependencies:
+      - target: MacPict
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macpict.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/MacPict.app/Contents/MacOS/MacPict"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  MacPict:
+    build:
+      targets:
+        MacPict: all
+        MacPictTests: [test]
+    test:
+      targets:
+        - MacPictTests
