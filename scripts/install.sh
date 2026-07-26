@@ -22,5 +22,7 @@ rm -rf "$DEST"
 ditto "$APP" "$DEST"
 
 print "Installed $DEST"
-print "Screen Recording is granted per binary. A newly installed build is a new binary, so"
-print "macOS will ask again, and it usually needs a relaunch after you grant it."
+# The Screen Recording grant is recorded against the bundle identifier and the signing
+# identity, not the binary, so replacing the bundle leaves an existing grant in force.
+print "A first install asks for Screen Recording on the first capture, and usually needs a"
+print "relaunch after you grant it. A reinstall keeps the grant you have already given."

@@ -23,7 +23,7 @@ MacPict uses Swift, SwiftUI, AppKit, ScreenCaptureKit, CoreGraphics, and Carbon.
 
 Builds Release, quits any running copy, and installs to `/Applications/MacPict.app`. Then launch it from Applications or Spotlight.
 
-Screen Recording is granted per binary, so a freshly installed build is a new binary as far as macOS is concerned: it will ask again, and it generally needs a relaunch after you grant it.
+Reinstalling keeps the Screen Recording grant you have already given — see [Screen Recording permission](#screen-recording-permission). Only a first install has to ask.
 
 ## Bootstrap, build, test, and run
 
@@ -62,6 +62,8 @@ MacPict is an `LSUIElement` app: it has no Dock icon and no menu bar of its own.
 Capture uses ScreenCaptureKit, which requires the Screen Recording privacy grant. On the first capture macOS prompts for it; you can also grant it in **System Settings → Privacy & Security → Screen & System Audio Recording**, or from MacPict's menu-bar menu.
 
 macOS often does not apply a newly granted Screen Recording permission to an already-running app. **If capture still fails right after you grant it, quit MacPict and launch it again.**
+
+Reinstalling over an existing copy does not revoke the grant. macOS records it against the bundle identifier and the app's designated code requirement — for MacPict, its Apple Development signing identity — so a rebuild signed with the same certificate satisfies the requirement already on file and inherits the grant. An ad-hoc signed build (`codesign -s -`) is the case where this does not hold: its requirement is a hash of the binary, so every rebuild reads as a new app and has to ask again.
 
 ## Using it
 
