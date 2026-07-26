@@ -79,11 +79,14 @@ macOS often does not apply a newly granted Screen Recording permission to an alr
 | `[` / `]` | smaller / larger stroke and text size |
 | `⌘↩` | copy the annotated image to the clipboard, close the window |
 | `⌥⌘↩` | write the annotated PNG to a temp file and copy its path, close the window |
+| `⇧⌘S` or `⌘S` | Save As… — write the annotated PNG wherever you choose, close the window |
 | `Esc` | cancel the current text edit, otherwise close the window |
 | `⌘W` | close the window |
 | `⌘,` | settings |
 
 `⌘↩` is the primary route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a file path is easier to hand over than a binary blob.
+
+`⇧⌘S` is the third route, and the only one that produces something you still have tomorrow: it opens a save panel, and the annotated PNG goes wherever you point it, at the same native pixel resolution as the other two. The panel comes back to the folder you last saved into, and the name is prefilled as `MacPict-<timestamp>.png`. Cancelling the panel changes nothing — the snapshot and every annotation on it are still there. Plain `⌘S` does the same thing: a snapshot has nowhere to save *back* to, so there is no second meaning for it to have.
 
 A capture opens with the **crop tool already selected**, because the usual first move is to tighten the shot to what matters. Once you crop, the tool reverts to whatever you had before, so you land straight in annotating.
 

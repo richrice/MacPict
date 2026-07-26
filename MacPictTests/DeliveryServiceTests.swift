@@ -127,6 +127,65 @@ final class DeliveryServiceTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), secondURL.path)
     }
 
+    // MARK: - Save As
+
+    func testSaveWritesTheExactBytesToTheChosenURL() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let png = try makePNG(red: 0.9)
+        let destination = directory.appendingPathComponent("Somewhere Else.png")
+
+        try makeService().save(png, to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), png)
+    }
+
+    /// The panel has already asked the user whether to replace the file, so by the time the
+    /// service sees it the answer is yes — a save that quietly refused would strand them.
+    func testSaveReplacesAFileAlreadyAtTheChosenURL() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("Taken.png")
+        let first = try makePNG(red: 0.1)
+        let second = try makePNG(red: 0.9)
+        XCTAssertNotEqual(first, second)
+        let service = makeService()
+
+        try service.save(first, to: destination)
+        try service.save(second, to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: destination), second)
+    }
+
+    /// Nothing else in the save path can fail, so this is the one error the coordinator has to
+    /// be able to show — and it has to name the file the user picked.
+    func testSaveReportsAFileWriteFailureNamingTheChosenPath() throws {
+        // The directory is deliberately never created, so the write has nowhere to land.
+        let destination = directory.appendingPathComponent("Nowhere.png")
+
+        XCTAssertThrowsError(try makeService().save(try makePNG(red: 0.9), to: destination)) { error in
+            guard case .fileWriteFailed(let message) = error as? DeliveryError else {
+                return XCTFail("Expected fileWriteFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains(destination.path), message)
+        }
+    }
+
+    /// Save As writes where it is told and nowhere else: the temp-file route's directory must
+    /// not be created as a side effect, and the clipboard must be left alone.
+    func testSaveTouchesNeitherTheTempDirectoryNorThePasteboard() throws {
+        let elsewhere = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacPictSaveTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: elsewhere) }
+        let destination = elsewhere.appendingPathComponent("Chosen.png")
+
+        try makeService().save(try makePNG(red: 0.9), to: destination)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertNil(pasteboard.data(forType: .png))
+        XCTAssertNil(pasteboard.string(forType: .string))
+    }
+
     func testDefaultDirectoryIsTheTemporaryMacPictFolder() {
         XCTAssertEqual(
             DeliveryService.defaultDirectory.path,

@@ -68,6 +68,8 @@ private final class FakePermission: ScreenCapturePermissionProviding {
 private final class FakeDelivery: SnapshotDelivering {
     private(set) var copiedImages: [Data] = []
     private(set) var copiedPaths: [Data] = []
+    private(set) var savedImages: [Data] = []
+    private(set) var savedURLs: [URL] = []
     var error: (any Error)?
 
     enum Failure: Error {
@@ -85,6 +87,49 @@ private final class FakeDelivery: SnapshotDelivering {
         copiedPaths.append(png)
         return URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake.png")
     }
+
+    func save(_ png: Data, to url: URL) throws {
+        if let error { throw error }
+        savedImages.append(png)
+        savedURLs.append(url)
+    }
+}
+
+/// Stands in for the save panel, which cannot be put on screen in a test run. `url` is what the
+/// user "picks"; `nil` is the cancel button.
+@MainActor
+private final class FakeSaveLocation: SaveLocationRequesting {
+    var url: URL?
+    private(set) var requestCount = 0
+    private(set) var suggestedNames: [String] = []
+    private(set) var attachedWindows: [NSWindow?] = []
+
+    /// When true a request parks until `release()` is called, which is how a test can hold the
+    /// panel open and try to open a second one.
+    var isGated = false
+    /// An array, not a single continuation: a broken "one panel at a time" guard has to fail the
+    /// assertion rather than strand a second request and hang the suite.
+    private var gates: [CheckedContinuation<Void, Never>] = []
+
+    func requestSaveLocation(suggestedName: String, attachedTo window: NSWindow?) async -> URL? {
+        requestCount += 1
+        suggestedNames.append(suggestedName)
+        attachedWindows.append(window)
+        if isGated {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                gates.append(continuation)
+            }
+        }
+        return url
+    }
+
+    func release() {
+        let parked = gates
+        gates.removeAll()
+        for continuation in parked {
+            continuation.resume()
+        }
+    }
 }
 
 @MainActor
@@ -98,6 +143,8 @@ final class CoordinatorTests: XCTestCase {
 
     private var capture: FakeScreenCapture!
     private var delivery: FakeDelivery!
+    private var saveLocation: FakeSaveLocation!
+    private var saveDirectory: URL!
     private var permission: FakePermission!
     private var defaults: UserDefaults!
     private var settings: SettingsStore!
@@ -110,6 +157,11 @@ final class CoordinatorTests: XCTestCase {
         try await super.setUp()
         capture = FakeScreenCapture(image: try makeImage(width: imageWidth, height: imageHeight))
         delivery = FakeDelivery()
+        // A path, never a real file: `FakeDelivery` records the destination instead of writing
+        // to it, so nothing in this suite can put a file on the user's disk.
+        saveDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacPictCoordinatorTests-\(UUID().uuidString)", isDirectory: true)
+        saveLocation = FakeSaveLocation()
         // A granting fake, so the capture flow runs the real permission gate instead of
         // bypassing it — and so nothing in this suite can reach the system's TCC prompt.
         permission = FakePermission(status: .granted)
@@ -132,6 +184,11 @@ final class CoordinatorTests: XCTestCase {
         defaults?.removePersistentDomain(forName: Self.defaultsSuite)
         defaults = nil
         permission = nil
+        // Any request still parked on the gate is released, so a failing test reports its
+        // failure instead of leaking a continuation into the next one.
+        saveLocation?.release()
+        saveLocation = nil
+        saveDirectory = nil
         delivery = nil
         capture = nil
         try await super.tearDown()
@@ -142,6 +199,7 @@ final class CoordinatorTests: XCTestCase {
             permission: permission,
             capture: capture,
             delivery: delivery,
+            saveLocation: saveLocation,
             hotkey: hotkeyManager,
             settings: settings
         )
@@ -279,6 +337,148 @@ final class CoordinatorTests: XCTestCase {
         XCTAssertEqual(delivery.copiedPaths.count, 1)
         XCTAssertEqual(delivery.copiedImages.count, 0)
         XCTAssertNil(coordinator.activeWindowController)
+    }
+
+    // MARK: - Save As
+
+    /// The save flow is asynchronous because the panel is: the task is read before the first
+    /// suspension, so it is always the one this request started.
+    private func runSaveAs(from controller: AnnotationWindowController) async {
+        coordinator.annotationWindowDidRequestSaveAs(controller)
+        await coordinator.saveTask?.value
+    }
+
+    /// Waits for the gated fake to actually be inside a request. Polling, not a bare `yield()`:
+    /// the save task is scheduled rather than run by `annotationWindowDidRequestSaveAs`, and
+    /// releasing the gate before it has been reached would park the task forever.
+    private func awaitSaveRequest() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while saveLocation.requestCount == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(saveLocation.requestCount, 1, "the save panel was never asked for a location")
+    }
+
+    func testSaveAsWritesTheExportedPNGToTheChosenURLAndClosesTheWindow() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        let destination = saveDirectory.appendingPathComponent("Chosen.png")
+        saveLocation.url = destination
+
+        await runSaveAs(from: controller)
+
+        XCTAssertEqual(saveLocation.requestCount, 1)
+        XCTAssertEqual(delivery.savedURLs, [destination])
+        let decoded = try decode(try XCTUnwrap(delivery.savedImages.first))
+        XCTAssertEqual(decoded.width, imageWidth)
+        XCTAssertEqual(decoded.height, imageHeight)
+        XCTAssertNil(coordinator.activeWindowController)
+        // Save As is its own route out: neither clipboard path may fire as a side effect.
+        XCTAssertEqual(delivery.copiedImages.count, 0)
+        XCTAssertEqual(delivery.copiedPaths.count, 0)
+    }
+
+    /// The panel is prefilled with the same name the temp-file route would have used, and it is
+    /// hung off the snapshot's own window rather than floating free of it.
+    func testSaveAsSuggestsATimestampedPNGNameOnTheSnapshotsOwnWindow() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        saveLocation.url = saveDirectory.appendingPathComponent("Chosen.png")
+
+        await runSaveAs(from: controller)
+
+        let suggested = try XCTUnwrap(saveLocation.suggestedNames.first)
+        XCTAssertTrue(suggested.hasPrefix("MacPict-"), suggested)
+        XCTAssertTrue(suggested.hasSuffix(".png"), suggested)
+        let attached = try XCTUnwrap(saveLocation.attachedWindows.first)
+        XCTAssertTrue(attached === controller.window, "the panel has to be a sheet on the snapshot's window")
+    }
+
+    /// Cancelling the panel is not a decision about the snapshot. Nothing is written and, above
+    /// all, nothing is closed — the annotations are still there to save somewhere else.
+    func testCancellingTheSavePanelWritesNothingAndLeavesTheWindowOpen() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        let annotation = Annotation(kind: .box(CGRect(x: 5, y: 5, width: 30, height: 20)), style: .default)
+        controller.document.append(annotation)
+        saveLocation.url = nil
+
+        await runSaveAs(from: controller)
+
+        XCTAssertEqual(saveLocation.requestCount, 1)
+        XCTAssertEqual(delivery.savedURLs, [])
+        XCTAssertTrue(coordinator.activeWindowController === controller)
+        XCTAssertEqual(controller.document.annotations, [annotation])
+    }
+
+    /// The same rule as every other delivery: a write that failed must leave the window standing
+    /// so the user can pick somewhere else.
+    func testASaveThatThrowsLeavesTheWindowOpen() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        saveLocation.url = saveDirectory.appendingPathComponent("Chosen.png")
+        delivery.error = FakeDelivery.Failure.refused
+
+        await runSaveAs(from: controller)
+
+        XCTAssertEqual(delivery.savedURLs, [])
+        XCTAssertTrue(coordinator.activeWindowController === controller)
+    }
+
+    func testSaveAsWritesACroppedDocumentAtTheCropSize() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        let cropRect = CGRect(x: 20, y: 10, width: 60, height: 40)
+        controller.document.crop(to: cropRect)
+        saveLocation.url = saveDirectory.appendingPathComponent("Cropped.png")
+
+        await runSaveAs(from: controller)
+
+        let decoded = try decode(try XCTUnwrap(delivery.savedImages.first))
+        XCTAssertEqual(decoded.width, Int(cropRect.width))
+        XCTAssertEqual(decoded.height, Int(cropRect.height))
+    }
+
+    /// One panel per window. A second ⌘S while the first sheet is up must not stack another on
+    /// top of it — the user would have two panels to dismiss and no idea which one they answered.
+    func testASecondSaveRequestWhileThePanelIsUpIsIgnored() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        let destination = saveDirectory.appendingPathComponent("Chosen.png")
+        saveLocation.url = destination
+        saveLocation.isGated = true
+
+        coordinator.annotationWindowDidRequestSaveAs(controller)
+        let inFlight = coordinator.saveTask
+        try await awaitSaveRequest()
+        coordinator.annotationWindowDidRequestSaveAs(controller)
+
+        XCTAssertEqual(saveLocation.requestCount, 1, "a second panel was opened over the first")
+        saveLocation.release()
+        await inFlight?.value
+        XCTAssertEqual(delivery.savedURLs, [destination])
+        XCTAssertNil(coordinator.saveTask, "the flag has to clear or the next save is dead")
+    }
+
+    /// The bytes are fixed when the panel opens. Whatever happens to the document behind the
+    /// sheet, what lands on disk is what the user was looking at when they asked to save it.
+    func testTheSavedBytesAreTheOnesFromWhenThePanelOpened() async throws {
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        saveLocation.url = saveDirectory.appendingPathComponent("Chosen.png")
+        saveLocation.isGated = true
+
+        coordinator.annotationWindowDidRequestSaveAs(controller)
+        let inFlight = coordinator.saveTask
+        try await awaitSaveRequest()
+        // Behind the sheet: a crop that would change the exported size if it were read late.
+        controller.document.crop(to: CGRect(x: 20, y: 10, width: 60, height: 40))
+        saveLocation.release()
+        await inFlight?.value
+
+        let decoded = try decode(try XCTUnwrap(delivery.savedImages.first))
+        XCTAssertEqual(decoded.width, imageWidth)
+        XCTAssertEqual(decoded.height, imageHeight)
     }
 
     func testCancelDeliversNothingAndClosesTheWindow() async throws {

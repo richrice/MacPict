@@ -12,6 +12,7 @@ final class AnnotationCanvasView: NSView {
     /// Wired by `AnnotationWindowController`; these are the keyboard paths out of the window.
     var onCopyImage: (() -> Void)?
     var onCopyPath: (() -> Void)?
+    var onSaveAs: (() -> Void)?
     var onCancel: (() -> Void)?
 
     /// A drag shorter than this in view points is a click that missed, not an annotation.
@@ -309,6 +310,10 @@ final class AnnotationCanvasView: NSView {
             case "\u{7f}": document.clear()
             // Pending text is resolved by the controller's single delivery path, not here.
             case "\r": onCopyImage?()
+            // ⇧⌘S is the Save As shortcut, but a snapshot is an untitled document with nowhere
+            // to save *back* to, so plain ⌘S can only mean the same thing — and a habitual ⌘S
+            // that did nothing at all would be the worse answer.
+            case "s": onSaveAs?()
             default: return false
             }
             return true
@@ -317,6 +322,7 @@ final class AnnotationCanvasView: NSView {
             switch key {
             case "z": document.redo()
             case "r": document.resetCrop()
+            case "s": onSaveAs?()
             default: return false
             }
             return true

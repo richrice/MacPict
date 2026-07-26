@@ -18,6 +18,8 @@ final class AppCoordinator: NSObject {
         }
     }
 
+    private static let saveFailureDescription = "Saving the image failed"
+
     private static let idleSymbol = "camera.viewfinder"
     private static let successSymbol = "checkmark.circle.fill"
     private static let captureTitle = "Capture Display Under Pointer"
@@ -35,6 +37,7 @@ final class AppCoordinator: NSObject {
     private let permission: any ScreenCapturePermissionProviding
     private let capture: any ScreenCapturing
     private let delivery: any SnapshotDelivering
+    private let saveLocation: any SaveLocationRequesting
     private let hotkey: GlobalHotkeyManager
     private let settings: SettingsStore
 
@@ -43,6 +46,9 @@ final class AppCoordinator: NSObject {
     /// Doubles as the in-flight flag: a capture request is ignored while this is non-nil,
     /// and the tests await it to know the flow has finished.
     private(set) var captureTask: Task<Void, Never>?
+    /// Doubles as the panel-is-up flag: a save request is ignored while this is non-nil, so the
+    /// user cannot stack sheets on one window, and the tests await it to know the save finished.
+    private(set) var saveTask: Task<Void, Never>?
     /// Every shortcut handed to `GlobalHotkeyManager`, in order. Internal so the tests can
     /// assert on the coordinator's decision — which shortcut, and how many times — rather
     /// than on Carbon's registration result, which any other running application can change
@@ -75,6 +81,7 @@ final class AppCoordinator: NSObject {
             permission: permission,
             capture: ScreenCaptureService(permission: permission),
             delivery: DeliveryService(),
+            saveLocation: SaveLocationPanel(),
             hotkey: GlobalHotkeyManager(),
             settings: SettingsStore()
         )
@@ -84,12 +91,14 @@ final class AppCoordinator: NSObject {
         permission: any ScreenCapturePermissionProviding,
         capture: any ScreenCapturing,
         delivery: any SnapshotDelivering,
+        saveLocation: any SaveLocationRequesting,
         hotkey: GlobalHotkeyManager,
         settings: SettingsStore
     ) {
         self.permission = permission
         self.capture = capture
         self.delivery = delivery
+        self.saveLocation = saveLocation
         self.hotkey = hotkey
         self.settings = settings
         super.init()
@@ -275,14 +284,8 @@ final class AppCoordinator: NSObject {
     }
 
     private func deliver(_ action: DeliveryAction, from controller: AnnotationWindowController) {
-        let document = controller.document
         do {
-            let png = try SnapshotExporter.png(
-                image: document.image,
-                annotations: document.annotations,
-                // An uncropped document would otherwise pay for a crop of the whole image.
-                cropRect: document.isCropped ? document.cropRect : nil
-            )
+            let png = try exportedPNG(of: controller.document)
             switch action {
             case .image: try delivery.copyImage(png)
             case .path: try delivery.copyFilePath(png, timestamp: Date())
@@ -291,6 +294,62 @@ final class AppCoordinator: NSObject {
             // The window stays open. Destroying the user's annotations because a write
             // failed is the worst thing this app could do.
             report("\(action.failureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            return
+        }
+        clearMessage()
+        dismiss(controller)
+        flashSuccess()
+    }
+
+    private func exportedPNG(of document: AnnotationDocument) throws -> Data {
+        try SnapshotExporter.png(
+            image: document.image,
+            annotations: document.annotations,
+            // An uncropped document would otherwise pay for a crop of the whole image.
+            cropRect: document.isCropped ? document.cropRect : nil
+        )
+    }
+
+    /// Save As, in two steps that must stay in this order: the PNG is produced *before* the
+    /// panel goes up, so an export that cannot succeed says so immediately instead of asking
+    /// the user to name a file for bytes that do not exist.
+    ///
+    /// The bytes are then fixed for the life of the panel. That is the point: the window is
+    /// live behind a sheet only in the sense that it still exists, and what lands on disk is
+    /// what the user was looking at when they asked to save it.
+    private func saveAs(from controller: AnnotationWindowController) {
+        guard saveTask == nil else {
+            AppLogger.delivery.info("Ignoring a save request while the save panel is already up")
+            return
+        }
+        let png: Data
+        do {
+            png = try exportedPNG(of: controller.document)
+        } catch {
+            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            return
+        }
+        saveTask = Task { [weak self] in
+            await self?.performSave(png, from: controller)
+            self?.saveTask = nil
+        }
+    }
+
+    private func performSave(_ png: Data, from controller: AnnotationWindowController) async {
+        let suggestedName = DeliveryService.fileName(for: Date())
+        guard let url = await saveLocation.requestSaveLocation(
+            suggestedName: suggestedName,
+            attachedTo: controller.window
+        ) else {
+            // Cancelling the panel is not a failure and not a decision about the snapshot: the
+            // window stays exactly as it was, annotations and all.
+            AppLogger.delivery.info("Save cancelled; the snapshot is still open")
+            return
+        }
+        do {
+            try delivery.save(png, to: url)
+        } catch {
+            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
             return
         }
         clearMessage()
@@ -477,6 +536,10 @@ extension AppCoordinator: AnnotationWindowDelegate {
 
     func annotationWindowDidRequestCopyPath(_ controller: AnnotationWindowController) {
         deliver(.path, from: controller)
+    }
+
+    func annotationWindowDidRequestSaveAs(_ controller: AnnotationWindowController) {
+        saveAs(from: controller)
     }
 
     func annotationWindowDidCancel(_ controller: AnnotationWindowController) {

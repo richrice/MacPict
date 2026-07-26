@@ -6,6 +6,7 @@ import SwiftUI
 protocol AnnotationWindowDelegate: AnyObject {
     func annotationWindowDidRequestCopyImage(_ controller: AnnotationWindowController)
     func annotationWindowDidRequestCopyPath(_ controller: AnnotationWindowController)
+    func annotationWindowDidRequestSaveAs(_ controller: AnnotationWindowController)
     func annotationWindowDidCancel(_ controller: AnnotationWindowController)
 }
 
@@ -31,13 +32,16 @@ final class AnnotationWindowController: NSObject {
 
     private static let toolbarHeight: CGFloat = 44
     private static let screenInset: CGFloat = 40
-    /// The toolbar's own fitting width is 819 pt with the reset-crop control showing; below
-    /// this it would start clipping its controls, so a tight crop letterboxes instead.
-    private static let minimumContentSize = CGSize(width: 840, height: 220)
+    /// The toolbar's own fitting width was measured at 819 pt with the reset-crop control
+    /// showing; the Save As button adds its 24 pt frame and the 4 pt that spaces it, so it now
+    /// fits in 847. Below this it would start clipping its controls, so a tight crop
+    /// letterboxes instead. The 23 pt of slack over the fitting width is deliberate.
+    private static let minimumContentSize = CGSize(width: 870, height: 220)
 
     private enum Finish {
         case copyImage
         case copyPath
+        case saveAs
         case cancel
     }
 
@@ -81,6 +85,7 @@ final class AnnotationWindowController: NSObject {
 
         canvas.onCopyImage = { [weak self] in self?.deliver(.copyImage) }
         canvas.onCopyPath = { [weak self] in self?.deliver(.copyPath) }
+        canvas.onSaveAs = { [weak self] in self?.deliver(.saveAs) }
         canvas.onCancel = { [weak self] in self?.deliver(.cancel) }
 
         // Observing the published rect rather than the crop handler is what makes undo and
@@ -105,6 +110,12 @@ final class AnnotationWindowController: NSObject {
         // window as already closed and does not report a second, spurious cancel.
         guard !isClosed else { return }
         isClosed = true
+        // A save panel can still be up — a new capture replaces this window whatever it is
+        // doing. Ending the sheet first resumes whoever is awaiting the user's choice with a
+        // cancel, rather than orphaning it on a window that is going away.
+        if let sheet = window?.attachedSheet {
+            window?.endSheet(sheet, returnCode: .cancel)
+        }
         window?.close()
     }
 
@@ -115,6 +126,7 @@ final class AnnotationWindowController: NSObject {
                 document: document,
                 onCopyImage: { [weak self] in self?.deliver(.copyImage) },
                 onCopyPath: { [weak self] in self?.deliver(.copyPath) },
+                onSaveAs: { [weak self] in self?.deliver(.saveAs) },
                 onCancel: { [weak self] in self?.deliver(.cancel) }
             )
         )
@@ -145,7 +157,7 @@ final class AnnotationWindowController: NSObject {
     /// `windowWillClose` for the same reason.
     private func deliver(_ action: Finish) {
         switch action {
-        case .copyImage, .copyPath: canvas.commitTextEditing()
+        case .copyImage, .copyPath, .saveAs: canvas.commitTextEditing()
         case .cancel: canvas.cancelTextEditing()
         }
         finish(action)
@@ -158,6 +170,7 @@ final class AnnotationWindowController: NSObject {
         switch action {
         case .copyImage: annotationDelegate?.annotationWindowDidRequestCopyImage(self)
         case .copyPath: annotationDelegate?.annotationWindowDidRequestCopyPath(self)
+        case .saveAs: annotationDelegate?.annotationWindowDidRequestSaveAs(self)
         case .cancel: annotationDelegate?.annotationWindowDidCancel(self)
         }
     }

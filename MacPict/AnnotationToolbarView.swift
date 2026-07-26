@@ -7,6 +7,7 @@ struct AnnotationToolbarView: View {
     @ObservedObject var document: AnnotationDocument
     let onCopyImage: () -> Void
     let onCopyPath: () -> Void
+    let onSaveAs: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -130,6 +131,11 @@ struct AnnotationToolbarView: View {
 
     private var finishActions: some View {
         HStack(spacing: 4) {
+            iconButton(
+                "square.and.arrow.down",
+                help: "Save As… — write the PNG where you choose (⇧⌘S)",
+                action: onSaveAs
+            )
             iconButton("folder", help: "Copy PNG file path (⌥⌘↩)", action: onCopyPath)
             Button(action: onCopyImage) {
                 HStack(spacing: 4) {

@@ -10,6 +10,7 @@ private final class RecordingWindowDelegate: AnnotationWindowDelegate {
     enum Message: Equatable {
         case copyImage
         case copyPath
+        case saveAs
         case cancel
     }
 
@@ -19,17 +20,25 @@ private final class RecordingWindowDelegate: AnnotationWindowDelegate {
     private(set) var textsWhenNotified: [[String]] = []
     /// The coordinator closes the window after a delivery that succeeded and leaves it
     /// standing after one that threw, so both halves are modelled here.
-    var closesOnCopy = false
+    var closesOnDelivery = false
     var closesOnCancel = false
 
     func annotationWindowDidRequestCopyImage(_ controller: AnnotationWindowController) {
         record(.copyImage, controller)
-        if closesOnCopy { controller.close() }
+        if closesOnDelivery { controller.close() }
     }
 
     func annotationWindowDidRequestCopyPath(_ controller: AnnotationWindowController) {
         record(.copyPath, controller)
-        if closesOnCopy { controller.close() }
+        if closesOnDelivery { controller.close() }
+    }
+
+    /// Save As closes on a write that succeeded, exactly like the two copy routes — and unlike
+    /// them it also does nothing at all when the user cancels the panel, which is the
+    /// `closesOnDelivery == false` case.
+    func annotationWindowDidRequestSaveAs(_ controller: AnnotationWindowController) {
+        record(.saveAs, controller)
+        if closesOnDelivery { controller.close() }
     }
 
     func annotationWindowDidCancel(_ controller: AnnotationWindowController) {
@@ -111,6 +120,14 @@ final class AnnotationWindowControllerTests: XCTestCase {
 
     private func pressCopyPath() throws {
         _ = try canvas().performKeyEquivalent(with: keyEvent("\r", [.command, .option]))
+    }
+
+    private func pressSaveAs() throws {
+        _ = try canvas().performKeyEquivalent(with: keyEvent("s", [.command, .shift]))
+    }
+
+    private func pressPlainSave() throws {
+        _ = try canvas().performKeyEquivalent(with: keyEvent("s", .command))
     }
 
     private func pressCloseWindow() throws {
@@ -196,7 +213,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
     /// The regression guard: a delivery that throws leaves the window open by design, and an
     /// open window the user cannot retry from is worse than no window at all.
     func testCopyImageWhoseDelegateDoesNotCloseLeavesTheControllerLiveForARetry() throws {
-        delegate.closesOnCopy = false
+        delegate.closesOnDelivery = false
 
         try pressCopyImage()
         try pressCopyImage()
@@ -205,29 +222,73 @@ final class AnnotationWindowControllerTests: XCTestCase {
     }
 
     func testEveryActionKeepsWorkingWhileTheDelegateDeclinesToClose() throws {
-        delegate.closesOnCopy = false
+        delegate.closesOnDelivery = false
         delegate.closesOnCancel = false
 
         try pressCopyImage()
         try pressCopyPath()
+        try pressSaveAs()
         try pressEscape()
         try pressCloseWindow()
 
-        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .cancel, .cancel])
+        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .saveAs, .cancel, .cancel])
     }
 
     func testControllerIsInertOnceTheDelegateHasClosedIt() throws {
-        delegate.closesOnCopy = true
+        delegate.closesOnDelivery = true
 
         try pressCopyImage()
         XCTAssertEqual(delegate.messages, [.copyImage])
 
         try pressCopyImage()
         try pressCopyPath()
+        try pressSaveAs()
         try pressCloseWindow()
         try pressEscape()
 
         XCTAssertEqual(delegate.messages, [.copyImage])
+    }
+
+    // MARK: - Save As
+
+    /// Cancelling the save panel leaves the window standing, so the shortcut has to keep working
+    /// afterwards — a Save As you can only attempt once is worse than none.
+    func testSaveAsStaysAvailableAfterADelegateThatDoesNotClose() throws {
+        delegate.closesOnDelivery = false
+
+        try pressSaveAs()
+        try pressSaveAs()
+
+        XCTAssertEqual(delegate.messages, [.saveAs, .saveAs])
+    }
+
+    /// A snapshot has nowhere to save back to, so plain ⌘S can only mean Save As. Both spellings
+    /// reach the same single route out.
+    func testPlainCommandSReachesTheSameSaveAsRouteAsShiftCommandS() throws {
+        delegate.closesOnDelivery = false
+
+        try pressPlainSave()
+        try pressSaveAs()
+
+        XCTAssertEqual(delegate.messages, [.saveAs, .saveAs])
+    }
+
+    func testToolbarSaveAsCommitsPendingTextBeforeNotifyingTheDelegate() throws {
+        try beginTextEdit("save this note too")
+
+        try toolbar().onSaveAs()
+
+        XCTAssertEqual(committedTexts(), ["save this note too"])
+        XCTAssertEqual(delegate.messages, [.saveAs])
+        XCTAssertEqual(delegate.textsWhenNotified, [["save this note too"]])
+    }
+
+    func testKeyboardSaveAsStillCommitsPendingText() throws {
+        try beginTextEdit("keyboard save note")
+
+        try pressSaveAs()
+
+        XCTAssertEqual(delegate.textsWhenNotified, [["keyboard save note"]])
     }
 
     func testUserInitiatedCloseReportsCancelExactlyOnce() throws {
@@ -1165,7 +1226,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
     /// A successful delivery is still one-shot: the close that follows it must not turn into
     /// a cancel the coordinator would act on.
     func testSuccessfulCopyFollowedByCloseReportsNoCancel() throws {
-        delegate.closesOnCopy = true
+        delegate.closesOnDelivery = true
 
         try pressCopyImage()
 
