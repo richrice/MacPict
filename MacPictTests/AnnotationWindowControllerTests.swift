@@ -733,6 +733,118 @@ final class AnnotationWindowControllerTests: XCTestCase {
         )
     }
 
+    // MARK: - Stroke inset at the crop edge
+
+    /// Ink bounds over the **full** image, not the cropped export. Flattening with the crop can
+    /// only ever report ink inside it, so it cannot tell a complete shape from one the crop cut
+    /// flat; measuring the full image shows the ink that would have been lost.
+    private func fullImageInk(of document: AnnotationDocument) throws -> (minX: Int, maxX: Int, minY: Int, maxY: Int) {
+        let flattened = try SnapshotExporter.flatten(
+            image: document.image,
+            annotations: document.annotations,
+            cropRect: nil
+        )
+        return try XCTUnwrap(redInkBounds(flattened), "no annotation ink was drawn at all")
+    }
+
+    private func dragPastTheCorner(of crop: CGRect, tool: AnnotationTool, size: AnnotationSize) throws {
+        let document = controller.document
+        document.crop(to: crop)
+        document.tool = tool
+        document.style = AnnotationStyle(color: .red, size: size)
+        controller.window?.layoutIfNeeded()
+        let geometry = try canvas().geometry
+        try drag(
+            from: try windowPoint(fromCanvas: geometry.viewPoint(fromImage: CGPoint(x: crop.minX + 40, y: crop.minY + 30))),
+            to: try windowPoint(fromCanvas: geometry.viewPoint(fromImage: CGPoint(x: crop.maxX + 80, y: crop.maxY + 80)))
+        )
+        XCTAssertEqual(document.annotations.count, 1, "the drag should have produced one annotation")
+    }
+
+    /// A stroke is centred on its path, so a path clamped to the crop edge painted half its
+    /// width past it and the export cut it flat: measured at 2, 4 and 7 px for the three sizes.
+    func testStrokedShapesDraggedPastTheEdgeKeepAllTheirInkInsideTheCrop() throws {
+        let crop = CGRect(x: 100, y: 100, width: 400, height: 300)
+        for tool in [AnnotationTool.arrow, .box, .line, .ellipse] {
+            for size in AnnotationSize.allCases {
+                try useLargeDocument()
+                try dragPastTheCorner(of: crop, tool: tool, size: size)
+
+                let ink = try fullImageInk(of: controller.document)
+                XCTAssertLessThanOrEqual(CGFloat(ink.maxX) + 1, crop.maxX, "\(tool) \(size) ink ran past the right edge")
+                XCTAssertLessThanOrEqual(CGFloat(ink.maxY) + 1, crop.maxY, "\(tool) \(size) ink ran past the bottom edge")
+                XCTAssertGreaterThanOrEqual(CGFloat(ink.minX), crop.minX, "\(tool) \(size) ink ran past the left edge")
+                XCTAssertGreaterThanOrEqual(CGFloat(ink.minY), crop.minY, "\(tool) \(size) ink ran past the top edge")
+            }
+        }
+    }
+
+    /// The same shape, cropped and uncropped, must contain the same ink — nothing was lost to
+    /// the crop, which is the property the user actually reported.
+    func testNothingIsLostToTheCropWhenAShapeIsDraggedPastTheEdge() throws {
+        let crop = CGRect(x: 100, y: 100, width: 400, height: 300)
+        try useLargeDocument()
+        try dragPastTheCorner(of: crop, tool: .arrow, size: .large)
+
+        let full = try fullImageInk(of: controller.document)
+        let exported = try exportedInk(of: controller.document)
+
+        XCTAssertEqual(exported.minX, full.minX - Int(crop.minX))
+        XCTAssertEqual(exported.maxX, full.maxX - Int(crop.minX))
+        XCTAssertEqual(exported.minY, full.minY - Int(crop.minY))
+        XCTAssertEqual(exported.maxY, full.maxY - Int(crop.minY))
+    }
+
+    /// Text is not stroked, so the inset must not reach it. Two sizes with very different line
+    /// widths at the same anchor: a leaked stroke inset would move the second one.
+    func testTextPlacementIsUnaffectedByTheStrokeInset() throws {
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        let anchor = CGPoint(x: 200, y: 200)
+
+        var origins: [CGPoint] = []
+        for size in [AnnotationSize.small, .large] {
+            try useLargeDocument()
+            controller.document.crop(to: crop)
+            controller.document.style = AnnotationStyle(color: .red, size: size)
+            try beginTextEdit("edge", atImagePoint: anchor)
+            try canvas().commitTextEditing()
+            guard case let .text(origin, _, _)? = controller.document.annotations.last?.kind else {
+                return XCTFail("expected a text annotation")
+            }
+            origins.append(origin)
+        }
+
+        XCTAssertEqual(origins[0], origins[1], "the stroke inset leaked into the text path")
+        XCTAssertEqual(origins[0], anchor, "text should still commit exactly where it was clicked")
+    }
+
+    /// The inset only bites at the edge: a shape drawn with room to spare is where it was drawn.
+    func testShapeDrawnComfortablyInsideIsUnmoved() throws {
+        try useLargeDocument()
+        let document = controller.document
+        let crop = CGRect(x: 100, y: 100, width: 600, height: 400)
+        document.crop(to: crop)
+        document.tool = .arrow
+        document.style = AnnotationStyle(color: .red, size: .large)
+        controller.window?.layoutIfNeeded()
+        let geometry = try canvas().geometry
+        let start = CGPoint(x: 250, y: 250)
+        let finish = CGPoint(x: 450, y: 350)
+
+        try drag(
+            from: try windowPoint(fromCanvas: geometry.viewPoint(fromImage: start)),
+            to: try windowPoint(fromCanvas: geometry.viewPoint(fromImage: finish))
+        )
+
+        guard case let .arrow(from, to)? = document.annotations.last?.kind else {
+            return XCTFail("expected an arrow")
+        }
+        XCTAssertEqual(from.x, start.x, accuracy: 1)
+        XCTAssertEqual(from.y, start.y, accuracy: 1)
+        XCTAssertEqual(to.x, finish.x, accuracy: 1)
+        XCTAssertEqual(to.y, finish.y, accuracy: 1)
+    }
+
     // MARK: - Progressive typing
 
     /// Types one character at a time, the way a person does, and reports the editor's line

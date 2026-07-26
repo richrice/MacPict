@@ -2,133 +2,126 @@
 
 ## Outcome
 
-Delivered. A native macOS menu-bar app that collapses "screenshot → annotate → hand to an AI
-agent" into a few keystrokes: `⌃⌥⌘4` captures the display under the pointer, a floating window
-opens for annotation (line, box, ellipse, text, arrow, crop), and `⌘↩` puts the annotated PNG on
-the clipboard.
+Delivered and in daily use. A native macOS menu-bar app that collapses "screenshot → annotate →
+hand to an AI agent" into a few keystrokes: `⌃⌥ C` captures the display under the pointer, a
+floating window opens in crop mode, and `⌘↩` puts the annotated PNG on the clipboard.
 
-Repository: <https://github.com/richrice/MacPict> (public).
+Repository: <https://github.com/richrice/MacPict> (public, `main`).
 
 ## Final validation — run by the lead, not taken from worker reports
-
-From `/Users/rich/Repos/MacPict`:
 
 | Command | Exit | Result |
 |---|---|---|
 | `./scripts/bootstrap.sh` | 0 | project generated |
-| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **`, zero Swift warnings |
-| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, Executed 125 tests, 0 failures |
+| `./scripts/build.sh` | 0 | `BUILD SUCCEEDED`, zero Swift warnings |
+| `./scripts/test.sh` | 0 | `TEST SUCCEEDED`, 196 tests, 0 failures |
 
-Suites: AnnotationModel 35, AnnotationWindowController 18, CanvasGeometry 17, Coordinator 13,
-SnapshotExporter 12, DeliveryService 10, AnnotationRenderer 8, DisplayLocator 5, AppLogger 3,
-HotkeyShortcut 2, ScreenCaptureService 2 — summing to 125.
-
-Independent spot-checks: no obsoleted CoreGraphics capture symbols anywhere; no `isRunningInTests`
-branch in the capture flow; no local rounding in `SnapshotExporter`; no leftover mutation or TODO
-markers; `finish(_:)` has exactly one caller.
+Suites: AnnotationWindowController 44, AnnotationModel 37, Coordinator 25, CanvasGeometry 23,
+AnnotationRenderer 15, SnapshotExporter 13, DeliveryService 10, HotkeyShortcut 10,
+SettingsStore 9, DisplayLocator 5, AppLogger 3, ScreenCaptureService 2 — summing to 196.
 
 ## The finding that shaped the architecture
 
 `CGDisplayCreateImage`, `CGDisplayCreateImageForRect`, `CGWindowListCreateImage` and
-`CGWindowListCreateImageFromArray` are **obsoleted** as of macOS 15.0 — not deprecated. Referencing
-one is a hard compile error and `@available` cannot rescue it. Established by reading the macOS
-26.5 SDK headers and confirming with `swiftc -typecheck`, before any code was written.
+`CGWindowListCreateImageFromArray` are **obsoleted** as of macOS 15.0 — not deprecated.
+Referencing one is a hard compile error that `@available` cannot rescue. Established by reading
+the macOS 26.5 SDK headers and confirming with `swiftc -typecheck` before any code was written.
+ScreenCaptureKit is the only capture route; there is no fallback to design around.
 
-Consequence: ScreenCaptureKit is the only capture route and there is no fallback path to design
-around. Had this been assumed rather than verified, it would have surfaced as an unfixable build
-failure after the swarm had run.
+## Architecture
 
-## Architecture, and the two decisions that carry it
+**One renderer**, drawing into a caller-flipped top-left-origin context, serves both the canvas
+and the exporter — so preview/export agreement is structural rather than maintained by hand.
 
-**D-1 — one renderer, shared by screen and export.** `AnnotationRenderer` draws into a graphics
-context the *caller* has already flipped to top-left origin, and never flips on its own. The canvas
-satisfies that by being `isFlipped`; the exporter by flipping a bitmap context manually. Preview and
-export therefore cannot drift — it is structural, not a pair of routines kept in sync by hand.
+**One storage space**: all annotation geometry in full-image pixels, top-left origin, with a
+single conversion type. Crop is a `cropRect` in that same space with annotations never rebased,
+which is why nested crops, crop-undo and crop-after-annotate all work with no special-casing.
 
-That decision paid for itself twice. Task 5 measured that `NSImage.draw(in:from:operation:fraction:)`
-renders **mirrored** in a flipped context (`respectFlipped: true` is required) — an error in the
-lead's own brief that would have shipped upside-down screenshots. The exporter was unaffected
-because it draws the base image before flipping. The asymmetry between two callers of the same
-image-drawing API is exactly the divergence class D-1 exists to prevent.
+**One rounding policy** for crop rectangles (outward to whole pixels, in the document), so the
+toolbar readout, the on-screen preview and the exported PNG cannot disagree.
 
-**D-2 — one storage space.** All annotation geometry lives in full-image pixels, top-left origin.
-`CanvasGeometry` owns the only two conversion functions. Crop is a `cropRect` in that same space
-with annotations never rebased — which is why nested crops, crop-undo, and crop-after-annotate all
-work with no special-casing.
+## Features
 
-## Crop (added mid-run at the user's request)
+Capture of the display under the pointer; a floating annotation window; line, box, ellipse,
+arrow and text; crop with two entry paths (`6` or `⌘`-drag), instant apply, auto-revert to the
+previous tool, and the same undo stack as annotations; multi-line text with `⇧↩` and auto-wrap;
+per-tool cursors; a configurable capture hotkey with 21 presets; delivery as clipboard image
+(`⌘↩`) or clipboard file path (`⌥⌘↩`).
 
-Two entry paths, both applying on mouse-up with no confirm step: the crop tool (`6`/`C`), which
-auto-reverts to the previous tool, and `⌘`-drag from any tool, which leaves the tool untouched.
-Crops go on the same snapshot undo stack as annotations, so `⌘Z` undoes a crop exactly as it undoes
-a box. The region outside the pending crop dims while dragging, and the toolbar carries a live
-`W × H px` readout of what the agent will actually receive.
+## Review history
 
-## Adversarial review
+**Round 1 — Codex `gpt-5.6-sol`, effort `xhigh`, one invocation. Verdict: needs-attention.**
+Three findings, all confirmed against the code before repair: a failed replacement capture
+destroyed the open annotated snapshot (cause: the lead's brief said "close it and capture
+fresh"); toolbar delivery bypassed the text commit, so clicking Copy mid-typing lost the text;
+crop rects stayed fractional with three consumers rounding differently, a guarantee that passed
+only because every crop test used integral rectangles.
 
-### Round 1 — Codex `gpt-5.6-sol`, effort `xhigh`, one invocation. Verdict: needs-attention
+**Round 2 — `opus-adversary`, scoped, briefed cold. Verdict: pass with concerns.** Codex's
+review runtime has no resume path, so round 2 went to a fresh reviewer with an explicit briefing
+and hard scope boundary. It re-ran every worker mutation itself rather than trusting the reports.
+All three repairs verified; four Low findings, all fixed — including one the crop fix had itself
+introduced (pixel-alignment widened the "same rect" collision basin, so auto-revert stopped
+firing and stranded the user in crop mode).
 
-All three findings were confirmed against the code by the lead before any repair was specified.
+**Rounds 3+ — the user, using the app.** Every subsequent defect came from real use, and they
+were the ones that mattered most: the text outline appearing only on commit; text drifting 2 pt;
+the letterbox being indistinguishable from image content; text allowed past the crop edge when
+arrows were not; the editor oscillating between wrapped and unwrapped on every keystroke.
 
-| # | Sev | Finding | Resolution |
-|---|---|---|---|
-| 1 | high | `performCapture` closed the open annotated window *before* the permission gate and the capture await, so a failed second capture destroyed the user's annotations irrecoverably | Close moved to after the replacement controller is constructed; every early return now leaves the old controller live and intact. 3 tests incl. `===` identity and preserved-annotation assertions. **Cause was the lead's brief**, which said "close it and capture fresh" |
-| 2 | high | Toolbar Copy/Path called `finish` directly, bypassing `commitTextEditing`; clicking Copy mid-typing exported without the text and closed the window, losing it | Single `deliver(_:)` funnel commits pending text on copy and discards it on cancel; all six wirings routed through it, `finish` left with one caller. 7 tests |
-| 3 | medium | Crop rects stayed fractional and three consumers rounded differently; the "exact dimensions" criterion passed only because every crop test used integral rectangles | One rounding policy: `nonisolated static pixelAlignedRect` (outward), `canonicalCropRect` layering the minimum **after** alignment; `cropRect` integral by construction; `.integral` removed from the exporter |
+## Corrections in both directions
 
-**A worker corrected the reviewer on finding 3.** Task 4 reported that restoring `.integral` did
-*not* fail its new tests, because `CGRect.integral` already *is* outward rounding. The round-2
-reviewer independently re-derived that the two are provably equal on every input given an integral
-`imageSize`. Codex's 301-vs-300 example was actually the *toolbar's* nearest-rounding versus outward
-alignment. The real defect was a duplicated policy free to drift; the repair addresses that root
-cause, and the discriminating mutation lives in the model where it belongs.
+Workers corrected the lead repeatedly, always with measurement:
 
-### Round 2 — `opus-adversary`, scoped, briefed cold. Verdict: pass with concerns
+- `NSImage.draw(in:from:operation:fraction:)` renders **mirrored** in a flipped context; the
+  lead's brief would have shipped upside-down screenshots.
+- Multiplying the wrap width by `scale` cannot preserve line breaks, because glyph advances are
+  not linear in point size — demonstrated with the same string breaking differently at two
+  scales, which was the exact divergence the instruction was meant to prevent.
+- `drawingRect(forBounds:)` returns bare bounds on a borderless field, so the suggested way to
+  derive the text inset does not work; the real derivation is an empty cell's width.
+- A sub-minimum crop drag *does* reach the tool-revert site, contrary to the lead's claim.
+- Asserting "all ink inside the crop" against a *cropped* export is true by construction.
+- The lead's diagnosis that arrows were being lost outside the crop was wrong; the drag path was
+  already clamped. The real leak was the text tool.
 
-Codex's `adversarial-review` runtime has no resume path, so round 2 went to a fresh Opus reviewer
-with an explicit briefing and a hard scope boundary: verify the repairs, hunt regressions from
-them, re-check only the criteria the round-1 findings put in doubt. It re-ran every worker mutation
-itself against an rsync copy rather than trusting the reports.
+A worker also corrected the round-1 reviewer: `CGRect.integral` already *is* outward rounding, so
+the exporter's policy was duplicated rather than wrong. The round-2 reviewer independently
+re-derived this.
 
-All three repairs verified present and correct. Four Low findings, all fixed:
+## Testing lessons recorded
 
-| # | Finding | Resolution |
-|---|---|---|
-| 1 | Pixel-alignment widened the "same rect" collision basin to a full pixel, so a re-crop over a near-identical region pushed a phantom undo step **and** left the user stranded in crop mode — the mode trap the design exists to prevent, reintroduced by a fix for something else | `guard canonical != cropRect else { return }` in the model; revert condition dropped in the canvas |
-| 2 | `testWhitespaceOnlyPendingTextIsNotCommittedByADelivery` passed whether or not the code it tested ever ran — the only test of the whitespace-trim rule | Editor-teardown assertion added; verified it now fails under the mutation it previously survived |
-| 3 | A crop-geometry regression **crashed the test host** (index out of range) instead of failing, truncating the summary and hiding the real cause | Bounds-guarded the shared pixel accessor; a regression now reports `sample (x: 300, y: 40) outside 300x40` at the calling test's line |
-| 4 | `windowWillClose` was a fourth delegate exit bypassing `deliver`, contradicting its own doc comment — a latent trap for future maintenance | `cancelTextEditing()` added there; comment corrected to describe what is actually true |
+The suite reached 183 passing tests while text entry was unusable, because **every text test set
+a whole string at once** and the defect was a per-keystroke oscillation. Progressive-typing tests
+now exist and are the primary guard.
 
-**A worker corrected the lead's spec on finding 1.** The repair brief asserted that a sub-minimum
-drag was already discarded before the revert site. Task 5 verified otherwise — the degeneracy guard
-sat *below* the crop branch, so a pure click with the crop tool reached it. It fixed both halves
-rather than implementing the spec as written, which alone would have traded one wrong behaviour for
-another.
+Other vacuous tests caught by mutation rather than inspection: a pixel check reading premultiplied
+little-endian bytes positionally, so alpha registered as brightness and it matched every pixel of
+any image; a boundary test passing with the fix removed because a 14 px stroke bled across the
+boundary being asserted; a whitespace-trim test that passed whether or not the code it tested ever
+ran; and a first render set that validated the letterbox treatment without including the one case
+that mattered — an image whose edge tone matches the surround.
 
-## Known behaviour, deliberately accepted
+## Known and accepted
 
-A crop-tool drag longer than the 3-point degeneracy threshold but smaller than `minimumCropSide`
-(roughly a 3–8 view-point band) reverts the tool even though the crop was rejected. Staying in crop
-mode is arguably better there, but distinguishing the cases requires `crop(to:)` to report
-acceptance across two ownership boundaries, which is disproportionate for a slip-input case. One
-line each in `AnnotationModel.swift` and `AnnotationCanvasView.swift` if the preference changes.
+- A shortcut reserved by macOS's Symbolic Hot Keys can register successfully through Carbon and
+  never fire. Nothing detects it; the settings window would say "Registered".
+- The editor and renderer agree on line breaking to within a pixel rather than by construction.
+  The structural fix — laying the editor out in image-pixel metrics inside a scaled view — needs
+  the renderer to move to a single CTM-scaled layout in the same change, across two owners.
+  Measured at 2.87% metric difference; deferred, nothing lost by waiting.
+- `⌘,` reaching an accessory app was reasoned about, not observed.
 
-## Not built (PLAN.md §8)
+## Not built
 
 Capture-time region select; blur/redaction, highlighter, freehand, numbered badges; selecting or
-moving a committed annotation; settings window or shortcut recorder; drag-out; capture history;
-multiple simultaneous windows; app icon; launch-at-login; notarization; CI. All are additive.
-
-## Manual verification still outstanding
-
-Not automatable and outside the test gate: the TCC prompt on first capture, a real ScreenCaptureKit
-capture, multi-monitor pointer targeting, and Carbon hotkey delivery from another frontmost app.
-macOS commonly requires relaunching an app after Screen Recording is granted — the README says so.
+moving a committed annotation; drag-out; capture history; multiple simultaneous windows; app
+icon; launch-at-login; notarization; CI.
 
 ## Effort split
 
-Lead (Opus 5, max effort): SDK contract verification, architecture, task decomposition and contract
-pinning, the crop design, finding validation, fix specifications, all gate validation, README
-accuracy. Swarm (Opus 5 high, 7 workers): every line of implementation and every test, across 4
-waves and 7 repair round-trips. Scouts (Opus 5 low): MacDictate survey and the SDK header
-investigation. Reviewers: Codex `gpt-5.6-sol` round 1, `opus-adversary` round 2.
+Lead (Opus 5, max effort): SDK contract verification, architecture, task decomposition and
+contract pinning, crop and hotkey design, finding validation, fix specifications, every gate
+validation, README accuracy. Swarm (Opus 5 high, 8 workers): every line of implementation and
+every test. Scouts (Opus 5 low): MacDictate surveys and the SDK header investigation.
+Reviewers: Codex `gpt-5.6-sol` round 1, `opus-adversary` round 2, the user thereafter.

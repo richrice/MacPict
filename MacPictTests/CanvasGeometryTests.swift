@@ -309,6 +309,111 @@ final class CanvasGeometryTests: XCTestCase {
         }
     }
 
+    func testClampToSourceWithZeroInsetMatchesTheUninsetClamp() {
+        let geometry = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: CGRect(x: 100, y: 100, width: 200, height: 200),
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        // Text does not stroke, so it must keep landing exactly where it used to.
+        for point in [
+            CGPoint(x: 50, y: 200), CGPoint(x: 700, y: 200), CGPoint(x: 200, y: 20),
+            CGPoint(x: 200, y: 500), CGPoint(x: 150.5, y: 180.25), CGPoint(x: -5, y: -5),
+            CGPoint(x: 900, y: 900)
+        ] {
+            XCTAssertEqual(geometry.clampToSource(point, inset: 0), geometry.clampToSource(point), "\(point)")
+        }
+    }
+
+    func testClampToSourceInsetsEveryEdgeByTheStrokeAllowance() {
+        let source = CGRect(x: 100, y: 100, width: 200, height: 200)
+        let geometry = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: source,
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        let inset: CGFloat = 7
+
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 50, y: 200), inset: inset), CGPoint(x: 107, y: 200), "left")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 700, y: 200), inset: inset), CGPoint(x: 293, y: 200), "right")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 200, y: 20), inset: inset), CGPoint(x: 200, y: 107), "top")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 200, y: 500), inset: inset), CGPoint(x: 200, y: 293), "bottom")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: -5, y: -5), inset: inset), CGPoint(x: 107, y: 107), "top-left corner")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 900, y: 900), inset: inset), CGPoint(x: 293, y: 293), "bottom-right corner")
+
+        // Inside the crop but within the stroke band: still pushed in, or the ink overflows.
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 102, y: 200), inset: inset), CGPoint(x: 107, y: 200), "inside the band")
+        // Already inside the inset region: untouched.
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 150.5, y: 180.25), inset: inset), CGPoint(x: 150.5, y: 180.25), "interior")
+
+        // The property that motivates the change: a stroke of 2 * inset centred on the
+        // clamped point stays inside the crop instead of being sliced by the export.
+        for point in [CGPoint(x: -50, y: -50), CGPoint(x: 999, y: 999), CGPoint(x: 100, y: 300)] {
+            let clamped = geometry.clampToSource(point, inset: inset)
+            XCTAssertTrue(clamped.x - inset >= source.minX && clamped.x + inset <= source.maxX, "x ink outside \(point)")
+            XCTAssertTrue(clamped.y - inset >= source.minY && clamped.y + inset <= source.maxY, "y ink outside \(point)")
+        }
+    }
+
+    func testClampToSourceCollapsesOnlyTheAxisWithNoRoomForTheStroke() {
+        // A tall, narrow crop: 40 wide, 300 tall. An inset of 30 leaves no room across but
+        // plenty down, so x must collapse to the centre while y keeps clamping normally.
+        let source = CGRect(x: 100, y: 100, width: 40, height: 300)
+        let geometry = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: source,
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 0, y: 0), inset: 30), CGPoint(x: 120, y: 130), "x collapsed, y clamped")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 500, y: 500), inset: 30), CGPoint(x: 120, y: 370), "other corner")
+        XCTAssertEqual(geometry.clampToSource(CGPoint(x: 130, y: 250), inset: 30), CGPoint(x: 120, y: 250), "y untouched inside")
+
+        // Transposed: wide and short, so it is y that collapses and x that clamps.
+        let wide = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: CGRect(x: 100, y: 100, width: 300, height: 40),
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        XCTAssertEqual(wide.clampToSource(CGPoint(x: 0, y: 0), inset: 30), CGPoint(x: 130, y: 120), "y collapsed, x clamped")
+        XCTAssertEqual(wide.clampToSource(CGPoint(x: 999, y: 999), inset: 30), CGPoint(x: 370, y: 120), "other corner")
+
+        // Both axes short: both collapse to the centre, and nothing inverts.
+        let tiny = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: CGRect(x: 100, y: 100, width: 40, height: 40),
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        XCTAssertEqual(tiny.clampToSource(CGPoint(x: 0, y: 999), inset: 30), CGPoint(x: 120, y: 120), "both collapsed")
+    }
+
+    func testClampToSourceTreatsNegativeAndNonFiniteInsetsAsZero() {
+        let geometry = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: CGRect(x: 100, y: 100, width: 200, height: 200),
+            viewSize: CGSize(width: 400, height: 400)
+        )
+        let point = CGPoint(x: 50, y: 900)
+        let expected = geometry.clampToSource(point)
+        for inset in [CGFloat(0), -5, -0.5, .nan, .infinity, -.infinity] {
+            let clamped = geometry.clampToSource(point, inset: inset)
+            XCTAssertEqual(clamped, expected, "inset \(inset)")
+            XCTAssertFalse(clamped.x.isNaN, "inset \(inset)")
+            XCTAssertFalse(clamped.y.isNaN, "inset \(inset)")
+        }
+    }
+
+    func testClampToSourceWithAnInsetIsSafeForDegenerateSourceRects() {
+        let geometry = CanvasGeometry(
+            imageSize: CGSize(width: 800, height: 600),
+            sourceRect: CGRect(x: CGFloat.nan, y: 0, width: 200, height: 200),
+            viewSize: CGSize(width: 400, height: 300)
+        )
+        let clamped = geometry.clampToSource(CGPoint(x: 42, y: 24), inset: 7)
+        XCTAssertEqual(clamped, CGPoint(x: 42, y: 24))
+        XCTAssertFalse(clamped.x.isNaN)
+        XCTAssertFalse(clamped.y.isNaN)
+    }
+
     func testClampToSourceIsNaNFreeForDegenerateSourceRects() {
         let imageSize = CGSize(width: 800, height: 600)
         let viewSize = CGSize(width: 400, height: 300)

@@ -1161,3 +1161,91 @@ once, so a per-keystroke oscillation was invisible to all of them.
 
 Preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text position parity, extent
 clamping, per-tool cursors, letterbox hairlines, and `lineFragmentPadding = 0`.
+
+---
+
+## Fix — inset stroked clamps by half the line width
+
+### Measured, before and after
+
+Same gesture in both runs: drag from inside a crop of `(100, 50, 200, 100)` out past its
+bottom-right corner, then flatten over the **full** image so ink the crop would have cut is still
+visible to the measurement. Right edge at x=300, bottom at y=150.
+
+| Tool | Size | lineWidth | Before: ink right / bottom | After: ink right / bottom |
+|---|---|---|---|---|
+| arrow | small | 4 | x=301, y=151 — **+2 px past**, cut | x=299, y=149 — inside |
+| arrow | medium | 8 | x=303, y=153 — **+4 px past**, cut | x=299, y=149 — inside |
+| arrow | large | 14 | x=306, y=156 — **+7 px past**, cut | x=299, y=149 — inside |
+| box | small | 4 | x=301, y=151 — **+2 px past**, cut | x=299, y=149 — inside |
+| box | medium | 8 | x=303, y=153 — **+4 px past**, cut | x=299, y=149 — inside |
+| box | large | 14 | x=306, y=156 — **+7 px past**, cut | x=299, y=149 — inside |
+
+Exactly `lineWidth / 2` in every case, as predicted, and zero after. The committed endpoints show
+the inset directly: the same drag now ends at `(298, 148)`, `(296, 146)` and `(293, 143)` for the
+three sizes. Note the shapes still *reach* the edge — the stroke's outer edge lands on x=300 — they
+are simply no longer sliced by it.
+
+The inset is stored on the `Drag` when the mouse goes down and reused by `mouseDragged` and
+`mouseUp`, so the preview and the committed annotation are clamped identically and the shape cannot
+jump on release. Taking it from `document.style.lineWidth` at that moment means changing size
+mid-session behaves correctly.
+
+### Text is untouched — verified, not assumed
+
+`clampInset(isCrop:)` returns 0 for `.text`, so the text path is bit-identical to before. Verified
+two ways: `testTextPlacementIsUnaffectedByTheStrokeInset` commits the same string at the same
+anchor at `.small` and `.large` — a leaked inset would move the second by 5 px — and asserts both
+commit exactly on the click point; and that test **passes unchanged under the mutation**, which is
+what proves it is testing the text path rather than riding on the fix.
+
+### The crop tool: I agree, no inset
+
+A crop rectangle is a selection, not a stroke — there is no ink to hang off the edge, and the
+overlay's 1 pt border is chrome that never reaches the export. Insetting it would make it
+impossible to crop to the true edge of the image, which is a normal thing to want (trimming a
+window's left border, say), in exchange for nothing. `clampInset(isCrop:)` returns 0 for any crop
+drag, including a ⌘-drag started from a stroked tool, where the inset would otherwise have leaked
+in from the tool in force.
+
+### New tests
+
+- `testStrokedShapesDraggedPastTheEdgeKeepAllTheirInkInsideTheCrop` — all four stroked tools ×
+  all three sizes, asserting on flattened pixels
+- `testNothingIsLostToTheCropWhenAShapeIsDraggedPastTheEdge` — the cropped export's ink equals the
+  full-image ink translated by the crop origin, i.e. nothing was cut
+- `testTextPlacementIsUnaffectedByTheStrokeInset`
+- `testShapeDrawnComfortablyInsideIsUnmoved`
+
+A note on the trap the brief warned about: these assert on the **full-image** flatten, not the
+cropped one. A cropped export can only ever contain ink inside the crop, so asserting "all its ink
+is inside `sourceRect`" against the cropped image is true by construction and tests nothing. The
+full-image flatten is where a cut shape is still visible.
+
+### Mutation check
+
+`inset: 0` for the stroked tools — the pre-fix behaviour:
+
+- `** TEST FAILED **`, and **exactly two** tests failed:
+  `testStrokedShapesDraggedPastTheEdgeKeepAllTheirInkInsideTheCrop` (at +2, +4 and +7 px per size,
+  on both axes, for every tool) and `testNothingIsLostToTheCropWhenAShapeIsDraggedPastTheEdge`
+  (`299` against `306`).
+- `testTextPlacementIsUnaffectedByTheStrokeInset` and `testShapeDrawnComfortablyInsideIsUnmoved`
+  **passed** under the same mutation — the discrimination asked for.
+
+### Validation (real exit codes, final state)
+
+| Command | Result |
+|---|---|
+| `./scripts/bootstrap.sh` | exit 0 |
+| `./scripts/build.sh` | exit 0, `** BUILD SUCCEEDED **`, no `.swift` warnings or errors |
+| `./scripts/test.sh` | exit 0, `** TEST SUCCEEDED **`, **196 tests, 0 failures** |
+
+One process note worth recording: my first "after" measurement showed the overflow unchanged, and
+the cause was my own harness command — piping `swiftc` into `head -5` closed the pipe, killed the
+compile, and silently ran the previous binary. The numbers were real, they were just the *old*
+build's. Worth remembering the next time a measurement says a fix did nothing.
+
+Preserved: `isClosed`, the single `deliver(_:)` path, crop auto-revert, text position/extent
+parity, the progressive-typing fix (unbounded container when unwrapped, display-only frame,
+used-width for the wrapping case), per-tool cursors, and the letterbox hairlines.

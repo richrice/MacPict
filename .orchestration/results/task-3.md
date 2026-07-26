@@ -782,3 +782,104 @@ A later re-run (Tasks 4 and 5 still editing) exited 65 with 10 failures, **all**
 
 `AnnotationModelTests` 37 passed and `CanvasGeometryTests` 18 passed in **every** run,
 including the ones that were red elsewhere.
+
+---
+
+# Change — stroke-inset clamping
+
+## The declaration
+
+`MacPict/CanvasGeometry.swift` — a new overload; the existing one delegates, so nothing that
+does not stroke (text in particular) changes behaviour at all:
+
+```swift
+    func clampToSource(_ point: CGPoint) -> CGPoint {
+        clampToSource(point, inset: 0)
+    }
+
+    /// Clamps into `sourceRect` inset by `inset` on every side, so a path stroked at width
+    /// `2 * inset` and centred on the result stays entirely inside the visible region rather
+    /// than being cut flat at the edge.
+    func clampToSource(_ point: CGPoint, inset: CGFloat) -> CGPoint {
+        guard isSourceUsable else { return point }
+        let effectiveInset = (inset.isFinite && inset > 0) ? inset : 0
+        return CGPoint(
+            x: Self.clamp(point.x, from: sourceRect.minX, to: sourceRect.maxX, inset: effectiveInset),
+            y: Self.clamp(point.y, from: sourceRect.minY, to: sourceRect.maxY, inset: effectiveInset)
+        )
+    }
+```
+
+## Inverted range and independent axes
+
+Both are handled by one small per-axis primitive rather than by special cases at the call site:
+
+```swift
+    /// Per axis, because a crop can be wide and short: one axis may still have room for the
+    /// stroke while the other does not. When an axis has no room — `2 * inset` exceeds its
+    /// extent — there is no position where the stroke fits, so it collapses to the centre
+    /// instead of clamping against a reversed pair of bounds, which would silently return
+    /// the wrong edge.
+    private static func clamp(_ value: CGFloat, from lower: CGFloat, to upper: CGFloat, inset: CGFloat) -> CGFloat {
+        let low = lower + inset
+        let high = upper - inset
+        guard low <= high else { return (lower + upper) / 2 }
+        return min(max(value, low), high)
+    }
+```
+
+- **Inverted range**: detected as `low > high` and resolved to the axis's centre — the only
+  position where an over-wide stroke is at least symmetric about the visible region. A naive
+  `min(max(...))` would have returned `high` for every input, i.e. the wrong edge.
+- **Independent axes**: the primitive is applied separately to x and y, so a tall narrow crop
+  collapses x while y keeps clamping normally, and a wide short crop does the reverse.
+- **Bad insets**: negative, zero, NaN and ±infinity all fold to `0` via `effectiveInset`, so
+  the result is exactly the un-inset clamp and no NaN can be produced.
+- **Degeneracy**: reuses the existing `isSourceUsable` predicate — no second rule was invented.
+
+## New tests (`CanvasGeometryTests` 18 → 23)
+
+- `testClampToSourceWithZeroInsetMatchesTheUninsetClamp` — seven points, `inset: 0` versus
+  `clampToSource(_:)`, the regression guard that text and stroking tools still agree.
+- `testClampToSourceInsetsEveryEdgeByTheStrokeAllowance` — with `inset: 7`, all four sides and
+  both corners land at `minX + 7` / `maxX - 7` etc., a point inside the crop but within the
+  stroke band is still pushed in, a point already inside the inset region is untouched, and
+  three clamped points are asserted to keep a `2 * inset` stroke wholly inside the crop.
+- `testClampToSourceCollapsesOnlyTheAxisWithNoRoomForTheStroke` — a 40×300 crop with
+  `inset: 30` collapses x to 120 while y clamps to 130 / 370; the transposed 300×40 crop
+  collapses y and clamps x; a 40×40 crop collapses both.
+- `testClampToSourceTreatsNegativeAndNonFiniteInsetsAsZero` — `0`, `-5`, `-0.5`, `.nan`,
+  `.infinity`, `-.infinity` all equal the un-inset result, NaN-free.
+- `testClampToSourceWithAnInsetIsSafeForDegenerateSourceRects` — a NaN-origin source passes the
+  point through unchanged.
+
+## Mutation check
+
+Forced `effectiveInset` to `0` (delegating everything to the un-inset path) and ran
+`-only-testing:MacPictTests/CanvasGeometryTests`:
+
+```
+MUTATION_EXIT=65
+Executed 23 tests, with 19 failures (0 unexpected)
+failed: testClampToSourceInsetsEveryEdgeByTheStrokeAllowance
+failed: testClampToSourceCollapsesOnlyTheAxisWithNoRoomForTheStroke
+   ("(100.0, 100.0)") is not equal to ("(120.0, 130.0)") - x collapsed, y clamped
+   ("(100.0, 100.0)") is not equal to ("(130.0, 120.0)") - y collapsed, x clamped
+   ("(100.0, 140.0)") is not equal to ("(120.0, 120.0)") - both collapsed
+```
+
+Exactly the two inset-behaviour tests failed. `testClampToSourceWithZeroInsetMatchesTheUninsetClamp`,
+the bad-inset test and both degenerate tests still passed, confirming the guard is specific to
+the new behaviour and that the delegating overload is genuinely unchanged. Restored and
+re-verified.
+
+## Validation (real exit codes)
+
+| Command | Exit | Notes |
+|---|---|---|
+| `./scripts/build.sh` (immediately after my edit) | 65 | `AnnotationCanvasView.swift:242:21: error: cannot find 'clampInset' in scope` plus two cascading `extra argument 'inset' in call` — Task 5 mid-edit on its own helper. Reported, not touched; green on the next poll. |
+| `./scripts/bootstrap.sh` | 0 | |
+| `./scripts/build.sh` | 0 | `** BUILD SUCCEEDED **`, zero Swift `warning:`/`error:` lines |
+| `./scripts/test.sh` | 0 | `** TEST SUCCEEDED **`, **192 tests, 0 failures**, whole target. `AnnotationModelTests` 37 passed, `CanvasGeometryTests` 23 passed. Only `warning:` in the log is the usual `appintentsmetadataprocessor` note. |
+
+192 rather than 187 because this change adds five new tests.

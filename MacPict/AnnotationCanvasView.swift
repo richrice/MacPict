@@ -38,6 +38,9 @@ final class AnnotationCanvasView: NSView {
         let isCrop: Bool
         /// True only for the crop *tool*, so a ⌘-drag never disturbs the tool selection.
         let revertsTool: Bool
+        /// Fixed for the life of the drag, so the preview and the committed annotation are
+        /// clamped identically and the shape cannot jump on mouse-up.
+        let clampInset: CGFloat
     }
 
     private struct TextEditing {
@@ -235,8 +238,9 @@ final class AnnotationCanvasView: NSView {
         let geometry = self.geometry
         guard !geometry.displayRect.isEmpty else { return }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        let imagePoint = imagePoint(for: viewPoint, geometry: geometry)
         let isCrop = event.modifierFlags.contains(.command) || document.tool == .crop
+        let inset = clampInset(isCrop: isCrop)
+        let imagePoint = imagePoint(for: viewPoint, geometry: geometry, inset: inset)
 
         if !isCrop, document.tool == .text {
             beginTextEditing(at: imagePoint, geometry: geometry)
@@ -247,15 +251,16 @@ final class AnnotationCanvasView: NSView {
             startViewPoint: viewPoint,
             currentImagePoint: imagePoint,
             isCrop: isCrop,
-            revertsTool: document.tool == .crop
+            revertsTool: document.tool == .crop,
+            clampInset: inset
         )
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard drag != nil else { return }
+        guard let inset = drag?.clampInset else { return }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        drag?.currentImagePoint = imagePoint(for: viewPoint, geometry: geometry)
+        drag?.currentImagePoint = imagePoint(for: viewPoint, geometry: geometry, inset: inset)
         needsDisplay = true
     }
 
@@ -266,7 +271,7 @@ final class AnnotationCanvasView: NSView {
 
         let geometry = self.geometry
         let viewPoint = convert(event.locationInWindow, from: nil)
-        let end = imagePoint(for: viewPoint, geometry: geometry)
+        let end = imagePoint(for: viewPoint, geometry: geometry, inset: drag.clampInset)
 
         // A click that missed is not a gesture whichever tool is selected, so it neither draws,
         // nor crops, nor hands the tool back. This guard has to sit above the crop branch:
@@ -371,13 +376,28 @@ final class AnnotationCanvasView: NSView {
     /// Clamps into the *visible* image, twice over: into `displayRect` in view space, and into
     /// `sourceRect` in image space. A point in a letterbox band must not become an annotation
     /// in the region the crop threw away — that annotation would never reach the export.
-    private func imagePoint(for viewPoint: CGPoint, geometry: CanvasGeometry) -> CGPoint {
+    private func imagePoint(for viewPoint: CGPoint, geometry: CanvasGeometry, inset: CGFloat) -> CGPoint {
         let display = geometry.displayRect
         let bounded = CGPoint(
             x: min(max(viewPoint.x, display.minX), display.maxX),
             y: min(max(viewPoint.y, display.minY), display.maxY)
         )
-        return geometry.clampToSource(geometry.imagePoint(fromView: bounded))
+        return geometry.clampToSource(geometry.imagePoint(fromView: bounded), inset: inset)
+    }
+
+    /// Half the stroke width, so a path centred on the clamped point paints entirely inside the
+    /// visible region instead of being cut flat by the crop: measured, a large arrow ending on
+    /// the edge put ink 7 px past it.
+    ///
+    /// Zero for text, which is not stroked and whose extent clamping already bounds it, and zero
+    /// for a crop — a crop rectangle is a selection, not a stroke, and cropping right up to the
+    /// image edge is a thing people actually want.
+    private func clampInset(isCrop: Bool) -> CGFloat {
+        guard !isCrop else { return 0 }
+        switch document.tool {
+        case .arrow, .line, .box, .ellipse: return document.style.lineWidth / 2
+        case .text, .crop: return 0
+        }
     }
 
     private func rect(from: CGPoint, to: CGPoint) -> CGRect {

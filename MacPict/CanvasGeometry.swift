@@ -79,11 +79,31 @@ struct CanvasGeometry: Equatable, Sendable {
     /// the bounds, not the space. A degenerate source has no meaningful bounds to clamp into,
     /// so the point passes through rather than being forced against an inverted range.
     func clampToSource(_ point: CGPoint) -> CGPoint {
+        clampToSource(point, inset: 0)
+    }
+
+    /// Clamps into `sourceRect` inset by `inset` on every side, so a path stroked at width
+    /// `2 * inset` and centred on the result stays entirely inside the visible region rather
+    /// than being cut flat at the edge.
+    func clampToSource(_ point: CGPoint, inset: CGFloat) -> CGPoint {
         guard isSourceUsable else { return point }
+        let effectiveInset = (inset.isFinite && inset > 0) ? inset : 0
         return CGPoint(
-            x: min(max(point.x, sourceRect.minX), sourceRect.maxX),
-            y: min(max(point.y, sourceRect.minY), sourceRect.maxY)
+            x: Self.clamp(point.x, from: sourceRect.minX, to: sourceRect.maxX, inset: effectiveInset),
+            y: Self.clamp(point.y, from: sourceRect.minY, to: sourceRect.maxY, inset: effectiveInset)
         )
+    }
+
+    /// Per axis, because a crop can be wide and short: one axis may still have room for the
+    /// stroke while the other does not. When an axis has no room — `2 * inset` exceeds its
+    /// extent — there is no position where the stroke fits, so it collapses to the centre
+    /// instead of clamping against a reversed pair of bounds, which would silently return
+    /// the wrong edge.
+    private static func clamp(_ value: CGFloat, from lower: CGFloat, to upper: CGFloat, inset: CGFloat) -> CGFloat {
+        let low = lower + inset
+        let high = upper - inset
+        guard low <= high else { return (lower + upper) / 2 }
+        return min(max(value, low), high)
     }
 
     /// View points per source pixel, or nil when any input is degenerate.
