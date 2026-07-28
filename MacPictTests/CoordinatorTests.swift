@@ -378,7 +378,7 @@ final class CoordinatorTests: XCTestCase {
         XCTAssertEqual(delivery.copiedPaths.count, 0)
     }
 
-    /// The panel is prefilled with the same name the temp-file route would have used, and it is
+    /// The panel is prefilled with the same name the automatic archive route uses, and it is
     /// hung off the snapshot's own window rather than floating free of it.
     func testSaveAsSuggestsATimestampedPNGNameOnTheSnapshotsOwnWindow() async throws {
         await runCapture()
@@ -423,6 +423,10 @@ final class CoordinatorTests: XCTestCase {
 
         XCTAssertEqual(delivery.savedURLs, [])
         XCTAssertTrue(coordinator.activeWindowController === controller)
+        XCTAssertEqual(
+            controller.lastPresentedError,
+            .init(title: "Saving the image failed", detail: "refused")
+        )
     }
 
     func testSaveAsWritesACroppedDocumentAtTheCropSize() async throws {
@@ -504,6 +508,10 @@ final class CoordinatorTests: XCTestCase {
         XCTAssertEqual(delivery.copiedImages.count, 0)
         XCTAssertNotNil(coordinator.activeWindowController)
         XCTAssertTrue(coordinator.activeWindowController === controller)
+        XCTAssertEqual(
+            controller.lastPresentedError,
+            .init(title: "Copying the image failed", detail: "refused")
+        )
     }
 
     func testCroppedDocumentIsDeliveredAtTheCropSize() async throws {

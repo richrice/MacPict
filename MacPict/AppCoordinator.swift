@@ -293,7 +293,7 @@ final class AppCoordinator: NSObject {
         } catch {
             // The window stays open. Destroying the user's annotations because a write
             // failed is the worst thing this app could do.
-            report("\(action.failureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(action.failureDescription, error: error, on: controller)
             return
         }
         clearMessage()
@@ -326,7 +326,7 @@ final class AppCoordinator: NSObject {
         do {
             png = try exportedPNG(of: controller.document)
         } catch {
-            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(Self.saveFailureDescription, error: error, on: controller)
             return
         }
         saveTask = Task { [weak self] in
@@ -349,12 +349,23 @@ final class AppCoordinator: NSObject {
         do {
             try delivery.save(png, to: url)
         } catch {
-            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(Self.saveFailureDescription, error: error, on: controller)
             return
         }
         clearMessage()
         dismiss(controller)
         flashSuccess()
+    }
+
+    private func reportDeliveryFailure(
+        _ title: String,
+        error: any Error,
+        on controller: AnnotationWindowController
+    ) {
+        let detail = (error as? any LocalizedError)?.errorDescription
+            ?? String(describing: error)
+        report("\(title): \(detail)", to: AppLogger.delivery)
+        controller.presentError(title: title, detail: detail)
     }
 
     private func closeActiveWindow() {

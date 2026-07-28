@@ -32,6 +32,13 @@ final class DeliveryServiceTests: XCTestCase {
         DeliveryService(directory: directory, pasteboard: pasteboard)
     }
 
+    private func archivedPNGs() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+    }
+
     /// A real, decodable PNG whose bytes differ per `red` value.
     private func makePNG(red: CGFloat) throws -> Data {
         let rep = try XCTUnwrap(NSBitmapImageRep(
@@ -63,11 +70,17 @@ final class DeliveryServiceTests: XCTestCase {
         return try XCTUnwrap(calendar.date(from: components))
     }
 
-    func testCopyImagePlacesByteIdenticalPNGDataOnThePasteboard() throws {
+    func testCopyImagePlacesByteIdenticalPNGDataOnThePasteboardAndDisk() throws {
         let png = try makePNG(red: 0.9)
         try makeService().copyImage(png)
 
         XCTAssertEqual(pasteboard.data(forType: .png), png)
+        let archivedURLs = try archivedPNGs()
+        XCTAssertEqual(archivedURLs.count, 1)
+        let archived = try XCTUnwrap(archivedURLs.first)
+        XCTAssertTrue(archived.lastPathComponent.hasPrefix("MacPict-"), archived.lastPathComponent)
+        XCTAssertEqual(archived.pathExtension, "png")
+        XCTAssertEqual(try Data(contentsOf: archived), png)
     }
 
     func testCopyImageAlsoProvidesATIFFRepresentation() throws {
@@ -169,9 +182,9 @@ final class DeliveryServiceTests: XCTestCase {
         }
     }
 
-    /// Save As writes where it is told and nowhere else: the temp-file route's directory must
+    /// Save As writes where it is told and nowhere else: the automatic archive directory must
     /// not be created as a side effect, and the clipboard must be left alone.
-    func testSaveTouchesNeitherTheTempDirectoryNorThePasteboard() throws {
+    func testSaveTouchesNeitherTheAutomaticArchiveDirectoryNorThePasteboard() throws {
         let elsewhere = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacPictSaveTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
@@ -186,10 +199,13 @@ final class DeliveryServiceTests: XCTestCase {
         XCTAssertNil(pasteboard.string(forType: .string))
     }
 
-    func testDefaultDirectoryIsTheTemporaryMacPictFolder() {
+    func testDefaultDirectoryIsTheScreenshotsFolderInsidePictures() throws {
+        let pictures = try XCTUnwrap(
+            FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+        )
         XCTAssertEqual(
             DeliveryService.defaultDirectory.path,
-            FileManager.default.temporaryDirectory.appendingPathComponent("MacPict").path
+            pictures.appendingPathComponent("Screenshots").path
         )
     }
 
@@ -210,5 +226,20 @@ final class DeliveryServiceTests: XCTestCase {
             }
             XCTAssertTrue(message.contains(self.directory.path), message)
         }
+    }
+
+    func testCopyImageDoesNotTouchThePasteboardWhenItsArchiveCannotBeWritten() throws {
+        // A regular file where the directory should be makes createDirectory fail.
+        try Data().write(to: directory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertThrowsError(try makeService().copyImage(try makePNG(red: 0.9))) { error in
+            guard case .fileWriteFailed(let message) = error as? DeliveryError else {
+                return XCTFail("Expected fileWriteFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains(self.directory.path), message)
+        }
+        XCTAssertNil(pasteboard.data(forType: .png))
+        XCTAssertNil(pasteboard.data(forType: .tiff))
     }
 }

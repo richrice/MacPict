@@ -25,10 +25,16 @@ private final class AnnotationPanel: NSPanel {
 /// `NSWindowController` surface a caller would reach for still resolves.
 @MainActor
 final class AnnotationWindowController: NSObject {
+    struct PresentedError: Equatable {
+        let title: String
+        let detail: String
+    }
+
     let document: AnnotationDocument
     weak var annotationDelegate: AnnotationWindowDelegate?
 
     private(set) var window: NSWindow?
+    private(set) var lastPresentedError: PresentedError?
 
     private static let toolbarHeight: CGFloat = 44
     private static let screenInset: CGFloat = 40
@@ -103,6 +109,22 @@ final class AnnotationWindowController: NSObject {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(canvas)
+    }
+
+    /// Delivery errors belong to the window whose contents could not be delivered. Recording
+    /// the value even when the window is not visible keeps the behavior testable without
+    /// presenting UI from the test host.
+    func presentError(title: String, detail: String) {
+        lastPresentedError = PresentedError(title: title, detail: detail)
+        guard let window, window.isVisible else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "OK")
+        NSApp.activate()
+        alert.beginSheetModal(for: window)
     }
 
     func close() {

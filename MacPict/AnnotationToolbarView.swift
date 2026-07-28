@@ -40,7 +40,8 @@ struct AnnotationToolbarView: View {
                 iconButton(
                     tool.symbolName,
                     isOn: document.tool == tool,
-                    help: "\(tool.title) (\(tool.keyEquivalent))"
+                    help: "\(tool.title) (\(tool.keyEquivalent))",
+                    accessibilityName: tool.title
                 ) {
                     document.tool = tool
                 }
@@ -69,6 +70,8 @@ struct AnnotationToolbarView: View {
                 }
                 .buttonStyle(.plain)
                 .help(color.rawValue.capitalized)
+                .accessibilityLabel(Text(color.rawValue.capitalized))
+                .accessibilityAddTraits(document.style.color == color ? .isSelected : [])
             }
         }
     }
@@ -92,19 +95,36 @@ struct AnnotationToolbarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("\(size.title) ([ / ])")
+                .accessibilityLabel(Text(size.title))
+                .accessibilityAddTraits(isOn ? .isSelected : [])
             }
         }
     }
 
     private var history: some View {
         HStack(spacing: 2) {
-            iconButton("arrow.uturn.backward", isEnabled: document.canUndo, help: "Undo (⌘Z)") {
+            iconButton(
+                "arrow.uturn.backward",
+                isEnabled: document.canUndo,
+                help: "Undo (⌘Z)",
+                accessibilityName: "Undo"
+            ) {
                 document.undo()
             }
-            iconButton("arrow.uturn.forward", isEnabled: document.canRedo, help: "Redo (⇧⌘Z)") {
+            iconButton(
+                "arrow.uturn.forward",
+                isEnabled: document.canRedo,
+                help: "Redo (⇧⌘Z)",
+                accessibilityName: "Redo"
+            ) {
                 document.redo()
             }
-            iconButton("trash", isEnabled: !document.isEmpty, help: "Clear all (⌘⌫)") {
+            iconButton(
+                "trash",
+                isEnabled: !document.isEmpty,
+                help: "Clear all (⌘⌫)",
+                accessibilityName: "Clear all"
+            ) {
                 document.clear()
             }
         }
@@ -118,10 +138,13 @@ struct AnnotationToolbarView: View {
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundStyle(document.isCropped ? Color.accentColor : Color.secondary)
                 .help("Size delivered to the agent")
+                .accessibilityLabel("Output size")
+                .accessibilityValue(Text(outputText))
             if document.isCropped {
                 iconButton(
                     "arrow.up.left.and.arrow.down.right",
-                    help: "Reset crop to the full image (⇧⌘R)"
+                    help: "Reset crop to the full image (⇧⌘R)",
+                    accessibilityName: "Reset crop"
                 ) {
                     document.resetCrop()
                 }
@@ -134,9 +157,15 @@ struct AnnotationToolbarView: View {
             iconButton(
                 "square.and.arrow.down",
                 help: "Save As… — write the PNG where you choose (⇧⌘S)",
+                accessibilityName: "Save As",
                 action: onSaveAs
             )
-            iconButton("folder", help: "Copy PNG file path (⌥⌘↩)", action: onCopyPath)
+            iconButton(
+                "folder",
+                help: "Copy the PNG path, saving it to Pictures/Screenshots (⌥⌘↩)",
+                accessibilityName: "Copy saved PNG path",
+                action: onCopyPath
+            )
             Button(action: onCopyImage) {
                 HStack(spacing: 4) {
                     Image(systemName: "doc.on.clipboard")
@@ -145,8 +174,14 @@ struct AnnotationToolbarView: View {
                 .font(.system(size: 12, weight: .semibold))
             }
             .controlSize(.small)
-            .help("Copy the annotated image to the clipboard (⌘↩)")
-            iconButton("xmark", help: "Close without copying (Esc)", action: onCancel)
+            .help("Copy the annotated image and save it to Pictures/Screenshots (⌘↩)")
+            .accessibilityLabel("Copy annotated image")
+            iconButton(
+                "xmark",
+                help: "Close without copying (Esc)",
+                accessibilityName: "Close without copying",
+                action: onCancel
+            )
         }
     }
 
@@ -168,6 +203,7 @@ struct AnnotationToolbarView: View {
         isOn: Bool = false,
         isEnabled: Bool = true,
         help: String,
+        accessibilityName: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -182,5 +218,7 @@ struct AnnotationToolbarView: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .help(help)
+        .accessibilityLabel(Text(accessibilityName ?? help))
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }

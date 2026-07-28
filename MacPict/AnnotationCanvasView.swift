@@ -309,7 +309,7 @@ final class AnnotationCanvasView: NSView {
             case "w": onCancel?()
             case "\u{7f}": document.clear()
             // Pending text is resolved by the controller's single delivery path, not here.
-            case "\r": onCopyImage?()
+            case "\r", "\u{3}": onCopyImage?()
             // ⇧⌘S is the Save As shortcut, but a snapshot is an untitled document with nowhere
             // to save *back* to, so plain ⌘S can only mean the same thing — and a habitual ⌘S
             // that did nothing at all would be the worse answer.
@@ -327,7 +327,7 @@ final class AnnotationCanvasView: NSView {
             }
             return true
         }
-        if flags == [.command, .option], key == "\r" {
+        if flags == [.command, .option], key == "\r" || key == "\u{3}" {
             onCopyPath?()
             return true
         }

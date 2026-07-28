@@ -234,6 +234,19 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .saveAs, .cancel, .cancel])
     }
 
+    func testKeypadEnterReachesBothCopyRoutes() throws {
+        let canvas = try canvas()
+
+        XCTAssertTrue(
+            canvas.performKeyEquivalent(with: try keyEvent("\u{3}", .command))
+        )
+        XCTAssertTrue(
+            canvas.performKeyEquivalent(with: try keyEvent("\u{3}", [.command, .option]))
+        )
+
+        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath])
+    }
+
     func testControllerIsInertOnceTheDelegateHasClosedIt() throws {
         delegate.closesOnDelivery = true
 

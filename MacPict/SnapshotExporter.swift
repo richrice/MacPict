@@ -4,11 +4,24 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-enum SnapshotExporterError: Error, Equatable {
+enum SnapshotExporterError: Error, Equatable, LocalizedError {
     case bitmapContextCreationFailed
     case imageCreationFailed
     case pngEncodingFailed
     case cropOutOfBounds
+
+    var errorDescription: String? {
+        switch self {
+        case .bitmapContextCreationFailed:
+            "MacPict could not create an image buffer for the snapshot."
+        case .imageCreationFailed:
+            "MacPict could not create the annotated image."
+        case .pngEncodingFailed:
+            "MacPict could not encode the annotated image as PNG."
+        case .cropOutOfBounds:
+            "The selected crop does not overlap the captured image."
+        }
+    }
 }
 
 enum SnapshotExporter {

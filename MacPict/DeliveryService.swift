@@ -2,9 +2,18 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-enum DeliveryError: Error, Equatable {
+enum DeliveryError: Error, Equatable, LocalizedError {
     case pasteboardWriteFailed
     case fileWriteFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .pasteboardWriteFailed:
+            "The pasteboard rejected the snapshot."
+        case .fileWriteFailed(let message):
+            message
+        }
+    }
 }
 
 enum DeliveryOutcome: Equatable, Sendable {
@@ -75,7 +84,13 @@ final class SaveLocationPanel: SaveLocationRequesting {
 @MainActor
 final class DeliveryService: SnapshotDelivering {
     static var defaultDirectory: URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("MacPict", isDirectory: true)
+        guard let pictures = FileManager.default.urls(
+            for: .picturesDirectory,
+            in: .userDomainMask
+        ).first else {
+            preconditionFailure("Could not locate the user's Pictures directory")
+        }
+        return pictures.appendingPathComponent("Screenshots", isDirectory: true)
     }
 
     /// Pinned to en_US_POSIX so the name is stable and sortable whatever the user's locale is.
@@ -105,6 +120,8 @@ final class DeliveryService: SnapshotDelivering {
     }
 
     func copyImage(_ png: Data) throws {
+        let url = try write(png, timestamp: Date())
+
         pasteboard.clearContents()
         guard pasteboard.setData(png, forType: .png) else {
             AppLogger.delivery.error("Pasteboard rejected the PNG representation")
@@ -121,7 +138,9 @@ final class DeliveryService: SnapshotDelivering {
             AppLogger.delivery.error("Could not derive a TIFF representation from the PNG")
         }
 
-        AppLogger.delivery.info("Copied \(png.count, privacy: .public) PNG bytes to the pasteboard")
+        AppLogger.delivery.info(
+            "Wrote snapshot to \(url.path, privacy: .public) and copied \(png.count, privacy: .public) PNG bytes"
+        )
     }
 
     @discardableResult
