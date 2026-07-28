@@ -20,8 +20,9 @@ pkill -x MacPict 2>/dev/null || true
 
 rm -rf "$DEST"
 ditto "$APP" "$DEST"
+open "$DEST"
 
-print "Installed $DEST"
+print "Installed and launched $DEST"
 # The Screen Recording grant is recorded against the bundle identifier and the signing
 # identity, not the binary, so replacing the bundle leaves an existing grant in force.
 print "A first install asks for Screen Recording on the first capture, and usually needs a"
