@@ -10,6 +10,7 @@ private final class RecordingWindowDelegate: AnnotationWindowDelegate {
     enum Message: Equatable {
         case copyImage
         case copyPath
+        case upload
         case saveAs
         case cancel
     }
@@ -30,6 +31,11 @@ private final class RecordingWindowDelegate: AnnotationWindowDelegate {
 
     func annotationWindowDidRequestCopyPath(_ controller: AnnotationWindowController) {
         record(.copyPath, controller)
+        if closesOnDelivery { controller.close() }
+    }
+
+    func annotationWindowDidRequestUpload(_ controller: AnnotationWindowController) {
+        record(.upload, controller)
         if closesOnDelivery { controller.close() }
     }
 
@@ -120,6 +126,10 @@ final class AnnotationWindowControllerTests: XCTestCase {
 
     private func pressCopyPath() throws {
         _ = try canvas().performKeyEquivalent(with: keyEvent("\r", [.command, .option]))
+    }
+
+    private func pressUpload() throws {
+        _ = try canvas().performKeyEquivalent(with: keyEvent("\r", [.command, .control]))
     }
 
     private func pressSaveAs() throws {
@@ -227,14 +237,15 @@ final class AnnotationWindowControllerTests: XCTestCase {
 
         try pressCopyImage()
         try pressCopyPath()
+        try pressUpload()
         try pressSaveAs()
         try pressEscape()
         try pressCloseWindow()
 
-        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .saveAs, .cancel, .cancel])
+        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .upload, .saveAs, .cancel, .cancel])
     }
 
-    func testKeypadEnterReachesBothCopyRoutes() throws {
+    func testKeypadEnterReachesAllDeliveryRoutes() throws {
         let canvas = try canvas()
 
         XCTAssertTrue(
@@ -243,8 +254,11 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertTrue(
             canvas.performKeyEquivalent(with: try keyEvent("\u{3}", [.command, .option]))
         )
+        XCTAssertTrue(
+            canvas.performKeyEquivalent(with: try keyEvent("\u{3}", [.command, .control]))
+        )
 
-        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath])
+        XCTAssertEqual(delegate.messages, [.copyImage, .copyPath, .upload])
     }
 
     func testControllerIsInertOnceTheDelegateHasClosedIt() throws {
@@ -255,6 +269,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
 
         try pressCopyImage()
         try pressCopyPath()
+        try pressUpload()
         try pressSaveAs()
         try pressCloseWindow()
         try pressEscape()
@@ -646,6 +661,16 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertEqual(committedTexts(), ["check this label"])
         XCTAssertEqual(delegate.messages, [.copyPath])
         XCTAssertEqual(delegate.textsWhenNotified, [["check this label"]])
+    }
+
+    func testToolbarUploadCommitsPendingTextBeforeNotifyingTheDelegate() throws {
+        try beginTextEdit("upload this note")
+
+        try toolbar().onUpload()
+
+        XCTAssertEqual(committedTexts(), ["upload this note"])
+        XCTAssertEqual(delegate.messages, [.upload])
+        XCTAssertEqual(delegate.textsWhenNotified, [["upload this note"]])
     }
 
     /// Guards the refactor that moved the commit out of the key handler and into the

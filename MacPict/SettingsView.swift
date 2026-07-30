@@ -38,9 +38,16 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("SSH delivery") {
+                TextField("SSH target", text: $settings.sshTarget, prompt: Text("user@host or SSH alias"))
+                    .textFieldStyle(.roundedBorder)
+                Text("Uses your existing SSH configuration and key. Uploaded images go to ~/.cache/macpict on the Linux host.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 232)
+        .frame(width: 420, height: 340)
     }
 
     private var statusSymbol: String {

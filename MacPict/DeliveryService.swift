@@ -5,12 +5,21 @@ import UniformTypeIdentifiers
 enum DeliveryError: Error, Equatable, LocalizedError {
     case pasteboardWriteFailed
     case fileWriteFailed(String)
+    case sshTargetMissing
+    case invalidSSHTarget
+    case sshUploadFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .pasteboardWriteFailed:
             "The pasteboard rejected the snapshot."
         case .fileWriteFailed(let message):
+            message
+        case .sshTargetMissing:
+            "Set an SSH target in MacPict Settings first."
+        case .invalidSSHTarget:
+            "The SSH target must be a host, user@host, or SSH config alias without spaces or options."
+        case .sshUploadFailed(let message):
             message
         }
     }
@@ -25,6 +34,8 @@ enum DeliveryOutcome: Equatable, Sendable {
 protocol SnapshotDelivering: AnyObject {
     func copyImage(_ png: Data) throws
     @discardableResult func copyFilePath(_ png: Data, timestamp: Date) throws -> URL
+    @discardableResult
+    func uploadAndCopyRemotePath(_ png: Data, target: String, timestamp: Date) async throws -> String
     func save(_ png: Data, to url: URL) throws
 }
 
@@ -113,10 +124,16 @@ final class DeliveryService: SnapshotDelivering {
 
     let directory: URL
     private let pasteboard: NSPasteboard
+    private let sshExecutableURL: URL
 
-    init(directory: URL = DeliveryService.defaultDirectory, pasteboard: NSPasteboard = .general) {
+    init(
+        directory: URL = DeliveryService.defaultDirectory,
+        pasteboard: NSPasteboard = .general,
+        sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")
+    ) {
         self.directory = directory
         self.pasteboard = pasteboard
+        self.sshExecutableURL = sshExecutableURL
     }
 
     func copyImage(_ png: Data) throws {
@@ -155,6 +172,75 @@ final class DeliveryService: SnapshotDelivering {
 
         AppLogger.delivery.info("Wrote snapshot to \(url.path, privacy: .public) and copied its path")
         return url
+    }
+
+    @discardableResult
+    func uploadAndCopyRemotePath(
+        _ png: Data,
+        target rawTarget: String,
+        timestamp: Date
+    ) async throws -> String {
+        let target = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else {
+            throw DeliveryError.sshTargetMissing
+        }
+        guard !target.hasPrefix("-"),
+              target.rangeOfCharacter(
+                from: CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+              ) == nil else {
+            throw DeliveryError.invalidSSHTarget
+        }
+
+        let localURL = try write(png, timestamp: timestamp)
+        let fileName = localURL.lastPathComponent
+        let remoteCommand = """
+            set -eu
+            umask 077
+            directory="${XDG_CACHE_HOME:-$HOME/.cache}/macpict"
+            mkdir -p "$directory"
+            remote_file="$directory/\(fileName)"
+            cat > "$remote_file"
+            printf '%s' "$remote_file"
+            """
+
+        let result: (status: Int32, output: Data, error: Data)
+        do {
+            result = try await runSSH(
+                target: target,
+                remoteCommand: remoteCommand,
+                standardInput: localURL
+            )
+        } catch {
+            throw DeliveryError.sshUploadFailed(
+                "Could not start SSH: \(error.localizedDescription)"
+            )
+        }
+
+        guard result.status == 0 else {
+            let detail = String(data: result.error, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw DeliveryError.sshUploadFailed(
+                detail.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? "SSH exited with status \(result.status)."
+            )
+        }
+
+        let remotePath = String(data: result.output, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard remotePath.hasPrefix("/"),
+              remotePath.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw DeliveryError.sshUploadFailed("SSH did not return the uploaded image path.")
+        }
+
+        pasteboard.clearContents()
+        guard pasteboard.setString(remotePath, forType: .string) else {
+            throw DeliveryError.pasteboardWriteFailed
+        }
+
+        AppLogger.delivery.info(
+            "Uploaded \(png.count, privacy: .public) PNG bytes to \(target, privacy: .public):\(remotePath, privacy: .public) and copied the remote path"
+        )
+        return remotePath
     }
 
     /// Writes to a location the user picked, so unlike `copyFilePath` there is no name to
@@ -200,5 +286,45 @@ final class DeliveryService: SnapshotDelivering {
             )
         }
         return url
+    }
+
+    private func runSSH(
+        target: String,
+        remoteCommand: String,
+        standardInput inputURL: URL
+    ) async throws -> (status: Int32, output: Data, error: Data) {
+        let process = Process()
+        let output = Pipe()
+        let error = Pipe()
+        let input = try FileHandle(forReadingFrom: inputURL)
+
+        process.executableURL = sshExecutableURL
+        process.arguments = [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=10",
+            target,
+            remoteCommand
+        ]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = error
+
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { finished in
+                try? input.close()
+                continuation.resume(returning: (
+                    finished.terminationStatus,
+                    output.fileHandleForReading.readDataToEndOfFile(),
+                    error.fileHandleForReading.readDataToEndOfFile()
+                ))
+            }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                try? input.close()
+                continuation.resume(throwing: error)
+            }
+        }
     }
 }

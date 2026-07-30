@@ -12,6 +12,7 @@ final class AnnotationCanvasView: NSView {
     /// Wired by `AnnotationWindowController`; these are the keyboard paths out of the window.
     var onCopyImage: (() -> Void)?
     var onCopyPath: (() -> Void)?
+    var onUpload: (() -> Void)?
     var onSaveAs: (() -> Void)?
     var onCancel: (() -> Void)?
 
@@ -329,6 +330,10 @@ final class AnnotationCanvasView: NSView {
         }
         if flags == [.command, .option], key == "\r" || key == "\u{3}" {
             onCopyPath?()
+            return true
+        }
+        if flags == [.command, .control], key == "\r" || key == "\u{3}" {
+            onUpload?()
             return true
         }
         return false

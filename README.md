@@ -81,14 +81,25 @@ Reinstalling over an existing copy does not revoke the grant. macOS records it a
 | `[` / `]` | smaller / larger stroke and text size |
 | `⌘↩` | copy the annotated image and save it to `~/Pictures/Screenshots`, close the window |
 | `⌥⌘↩` | copy the path of the saved PNG, close the window |
+| `⌃⌘↩` | upload the PNG over SSH and copy its remote path, close the window |
 | `⇧⌘S` or `⌘S` | Save As… — write the annotated PNG wherever you choose, close the window |
 | `Esc` | cancel the current text edit, otherwise close the window |
 | `⌘W` | close the window |
 | `⌘,` | settings |
 
-`⌘↩` is the primary route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a file path is easier to hand over than a binary blob. Both routes also keep the annotated PNG in `~/Pictures/Screenshots`, so a missed paste does not lose the result and a copied path remains valid.
+`⌘↩` is the primary local route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a local file path is easier to hand over than a binary blob. Both routes also keep the annotated PNG in `~/Pictures/Screenshots`, so a missed paste does not lose the result and a copied path remains valid.
 
-`⇧⌘S` is the third route, for when you want to choose the destination yourself. It opens a save panel, and the annotated PNG goes wherever you point it, at the same native pixel resolution as the other two. Save As writes only to that chosen location; it does not create a second copy in the screenshots folder. The panel comes back to the folder you last saved into, and the name is prefilled as `MacPict-<timestamp>.png`. Cancelling the panel changes nothing — the snapshot and every annotation on it are still there. Plain `⌘S` does the same thing: a snapshot has nowhere to save *back* to, so there is no second meaning for it to have.
+`⌃⌘↩` is the remote route for a CLI running on Linux over SSH. Configure an **SSH target** in MacPict Settings using either `user@host` or an alias from `~/.ssh/config`. MacPict saves the PNG locally, streams it to `~/.cache/macpict` on that host, and puts the image's absolute remote path on the Mac clipboard. Paste that path into the remote Codex prompt and say what to inspect.
+
+SSH delivery uses `/usr/bin/ssh`, your existing SSH configuration, and key-based authentication; it installs nothing on the remote machine. Before using it, connect once from Terminal so the host key is trusted and confirm this succeeds without a password prompt:
+
+```sh
+ssh your-target true
+```
+
+MacPict uses non-interactive SSH with a ten-second connection timeout. If authentication or upload fails, the annotation window stays open and shows the SSH error so you can fix the connection and retry.
+
+`⇧⌘S` is the explicit-location route. It opens a save panel, and the annotated PNG goes wherever you point it, at the same native pixel resolution as the automatic delivery routes. Save As writes only to that chosen location; it does not create a second copy in the screenshots folder. The panel comes back to the folder you last saved into, and the name is prefilled as `MacPict-<timestamp>.png`. Cancelling the panel changes nothing — the snapshot and every annotation on it are still there. Plain `⌘S` does the same thing: a snapshot has nowhere to save *back* to, so there is no second meaning for it to have.
 
 Every automatically saved copy is named `MacPict-<timestamp>.png`. If two copies happen in the same second, MacPict adds a numeric suffix rather than replacing the first one.
 

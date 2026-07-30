@@ -26,7 +26,17 @@ final class SettingsStoreTests: XCTestCase {
     func testFreshStoreUsesTheCaptureDefault() {
         let store = SettingsStore(defaults: defaults)
         XCTAssertEqual(store.hotkey, .captureDefault)
+        XCTAssertEqual(store.sshTarget, "")
         XCTAssertNil(defaults.data(forKey: "captureHotkey"), "reading must not write")
+        XCTAssertNil(defaults.string(forKey: "sshTarget"), "reading must not write")
+    }
+
+    func testSSHTargetPersistsImmediately() {
+        let store = SettingsStore(defaults: defaults)
+        store.sshTarget = "devbox"
+
+        XCTAssertEqual(defaults.string(forKey: "sshTarget"), "devbox")
+        XCTAssertEqual(SettingsStore(defaults: defaults).sshTarget, "devbox")
     }
 
     func testAssigningTheHotkeyPersistsItImmediately() throws {

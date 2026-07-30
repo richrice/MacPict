@@ -6,6 +6,7 @@ import XCTest
 @MainActor
 final class DeliveryServiceTests: XCTestCase {
     private var directory: URL!
+    private var sshFixtureDirectory: URL!
     private var pasteboard: NSPasteboard!
 
     override func setUp() async throws {
@@ -13,6 +14,8 @@ final class DeliveryServiceTests: XCTestCase {
         // Deliberately not created: several tests assert the service creates it.
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MacPictDeliveryTests-\(UUID().uuidString)", isDirectory: true)
+        sshFixtureDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacPictSSHTests-\(UUID().uuidString)", isDirectory: true)
         // A uniquely named pasteboard, never NSPasteboard.general, so a test run
         // cannot clobber the user's real clipboard.
         pasteboard = NSPasteboard(name: NSPasteboard.Name("com.macpict.tests.\(UUID().uuidString)"))
@@ -25,11 +28,33 @@ final class DeliveryServiceTests: XCTestCase {
             try FileManager.default.removeItem(at: directory)
         }
         directory = nil
+        if FileManager.default.fileExists(atPath: sshFixtureDirectory.path) {
+            try FileManager.default.removeItem(at: sshFixtureDirectory)
+        }
+        sshFixtureDirectory = nil
         try await super.tearDown()
     }
 
-    private func makeService() -> DeliveryService {
-        DeliveryService(directory: directory, pasteboard: pasteboard)
+    private func makeService(sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")) -> DeliveryService {
+        DeliveryService(
+            directory: directory,
+            pasteboard: pasteboard,
+            sshExecutableURL: sshExecutableURL
+        )
+    }
+
+    private func makeSSHExecutable(_ body: String, interpreter: String = "/bin/sh") throws -> URL {
+        try FileManager.default.createDirectory(
+            at: sshFixtureDirectory,
+            withIntermediateDirectories: true
+        )
+        let executable = sshFixtureDirectory.appendingPathComponent("ssh")
+        try "#!\(interpreter)\n\(body)\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        return executable
     }
 
     private func archivedPNGs() throws -> [URL] {
@@ -138,6 +163,107 @@ final class DeliveryServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: secondURL), second)
         XCTAssertEqual(secondURL.lastPathComponent, "MacPict-2026-07-25-143012-1.png")
         XCTAssertEqual(pasteboard.string(forType: .string), secondURL.path)
+    }
+
+    // MARK: - SSH upload
+
+    func testUploadStreamsTheExactPNGAndCopiesTheReturnedRemotePath() async throws {
+        let uploaded = sshFixtureDirectory.appendingPathComponent("uploaded.png")
+        let remotePath = "/home/test/.cache/macpict/MacPict-2026-07-25-143012.png"
+        let executable = try makeSSHExecutable(
+            """
+            cat > "\(uploaded.path)"
+            printf '\(remotePath)'
+            """
+        )
+        let png = try makePNG(red: 0.9)
+
+        let result = try await makeService(sshExecutableURL: executable)
+            .uploadAndCopyRemotePath(png, target: "devbox", timestamp: try fixedTimestamp())
+
+        XCTAssertEqual(result, remotePath)
+        XCTAssertEqual(try Data(contentsOf: uploaded), png)
+        XCTAssertEqual(pasteboard.string(forType: .string), remotePath)
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent("MacPict-2026-07-25-143012.png")),
+            png
+        )
+    }
+
+    func testUploadCommandWorksWhenTheRemoteLoginShellIsZsh() async throws {
+        let remoteHome = sshFixtureDirectory.appendingPathComponent("remote-home")
+        let executable = try makeSSHExecutable(
+            """
+            export HOME="\(remoteHome.path)"
+            unset XDG_CACHE_HOME
+            eval "${@[-1]}"
+            """,
+            interpreter: "/bin/zsh"
+        )
+        let png = try makePNG(red: 0.9)
+        let expectedPath = remoteHome
+            .appendingPathComponent(".cache/macpict/MacPict-2026-07-25-143012.png")
+            .path
+
+        let result = try await makeService(sshExecutableURL: executable)
+            .uploadAndCopyRemotePath(png, target: "devbox", timestamp: try fixedTimestamp())
+
+        XCTAssertEqual(result, expectedPath)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: expectedPath)), png)
+    }
+
+    func testUploadWithoutATargetFailsBeforeWritingAnything() async throws {
+        do {
+            _ = try await makeService().uploadAndCopyRemotePath(
+                try makePNG(red: 0.9),
+                target: "  ",
+                timestamp: try fixedTimestamp()
+            )
+            XCTFail("Expected a missing-target error")
+        } catch {
+            XCTAssertEqual(error as? DeliveryError, .sshTargetMissing)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertNil(pasteboard.string(forType: .string))
+    }
+
+    func testUploadRejectsAnSSHTargetThatCouldBeParsedAsAnOption() async throws {
+        do {
+            _ = try await makeService().uploadAndCopyRemotePath(
+                try makePNG(red: 0.9),
+                target: "-oProxyCommand=anything",
+                timestamp: try fixedTimestamp()
+            )
+            XCTFail("Expected an invalid-target error")
+        } catch {
+            XCTAssertEqual(error as? DeliveryError, .invalidSSHTarget)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testSSHFailureReportsStderrAndDoesNotChangeThePasteboard() async throws {
+        let executable = try makeSSHExecutable(
+            """
+            cat >/dev/null
+            printf 'Permission denied' >&2
+            exit 255
+            """
+        )
+
+        do {
+            _ = try await makeService(sshExecutableURL: executable).uploadAndCopyRemotePath(
+                try makePNG(red: 0.9),
+                target: "devbox",
+                timestamp: try fixedTimestamp()
+            )
+            XCTFail("Expected SSH to fail")
+        } catch {
+            XCTAssertEqual(error as? DeliveryError, .sshUploadFailed("Permission denied"))
+        }
+
+        XCTAssertNil(pasteboard.string(forType: .string))
     }
 
     // MARK: - Save As

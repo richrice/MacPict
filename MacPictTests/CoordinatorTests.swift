@@ -68,6 +68,8 @@ private final class FakePermission: ScreenCapturePermissionProviding {
 private final class FakeDelivery: SnapshotDelivering {
     private(set) var copiedImages: [Data] = []
     private(set) var copiedPaths: [Data] = []
+    private(set) var uploadedImages: [Data] = []
+    private(set) var uploadTargets: [String] = []
     private(set) var savedImages: [Data] = []
     private(set) var savedURLs: [URL] = []
     var error: (any Error)?
@@ -86,6 +88,13 @@ private final class FakeDelivery: SnapshotDelivering {
         if let error { throw error }
         copiedPaths.append(png)
         return URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake.png")
+    }
+
+    func uploadAndCopyRemotePath(_ png: Data, target: String, timestamp: Date) async throws -> String {
+        if let error { throw error }
+        uploadedImages.append(png)
+        uploadTargets.append(target)
+        return "/home/test/.cache/macpict/MacPict-fake.png"
     }
 
     func save(_ png: Data, to url: URL) throws {
@@ -337,6 +346,38 @@ final class CoordinatorTests: XCTestCase {
         XCTAssertEqual(delivery.copiedPaths.count, 1)
         XCTAssertEqual(delivery.copiedImages.count, 0)
         XCTAssertNil(coordinator.activeWindowController)
+    }
+
+    func testUploadActionSendsTheExportedPNGToTheConfiguredTargetAndClosesTheWindow() async throws {
+        settings.sshTarget = "devbox"
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+
+        coordinator.annotationWindowDidRequestUpload(controller)
+        await coordinator.uploadTask?.value
+
+        XCTAssertEqual(delivery.uploadTargets, ["devbox"])
+        let decoded = try decode(try XCTUnwrap(delivery.uploadedImages.first))
+        XCTAssertEqual(decoded.width, imageWidth)
+        XCTAssertEqual(decoded.height, imageHeight)
+        XCTAssertNil(coordinator.activeWindowController)
+    }
+
+    func testUploadThatThrowsLeavesTheWindowOpenAndShowsTheError() async throws {
+        settings.sshTarget = "devbox"
+        await runCapture()
+        let controller = try XCTUnwrap(coordinator.activeWindowController)
+        delivery.error = FakeDelivery.Failure.refused
+
+        coordinator.annotationWindowDidRequestUpload(controller)
+        await coordinator.uploadTask?.value
+
+        XCTAssertTrue(delivery.uploadedImages.isEmpty)
+        XCTAssertTrue(coordinator.activeWindowController === controller)
+        XCTAssertEqual(
+            controller.lastPresentedError,
+            .init(title: "Uploading the image failed", detail: "refused")
+        )
     }
 
     // MARK: - Save As

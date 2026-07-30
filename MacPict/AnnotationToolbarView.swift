@@ -7,6 +7,7 @@ struct AnnotationToolbarView: View {
     @ObservedObject var document: AnnotationDocument
     let onCopyImage: () -> Void
     let onCopyPath: () -> Void
+    let onUpload: () -> Void
     let onSaveAs: () -> Void
     let onCancel: () -> Void
 
@@ -165,6 +166,12 @@ struct AnnotationToolbarView: View {
                 help: "Copy the PNG path, saving it to Pictures/Screenshots (⌥⌘↩)",
                 accessibilityName: "Copy saved PNG path",
                 action: onCopyPath
+            )
+            iconButton(
+                "arrow.up.circle",
+                help: "Upload over SSH and copy the remote path (⌃⌘↩)",
+                accessibilityName: "Upload over SSH",
+                action: onUpload
             )
             Button(action: onCopyImage) {
                 HStack(spacing: 4) {

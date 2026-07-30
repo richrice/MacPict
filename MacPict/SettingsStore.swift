@@ -65,6 +65,7 @@ struct HotkeyShortcut: Codable, Hashable, Identifiable, Sendable {
 final class SettingsStore: ObservableObject {
     private enum Key {
         static let hotkey = "captureHotkey"
+        static let sshTarget = "sshTarget"
     }
 
     private let defaults: UserDefaults
@@ -84,8 +85,15 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var sshTarget: String {
+        didSet {
+            defaults.set(sshTarget, forKey: Key.sshTarget)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        sshTarget = defaults.string(forKey: Key.sshTarget) ?? ""
         if let data = defaults.data(forKey: Key.hotkey),
            let decoded = try? JSONDecoder().decode(HotkeyShortcut.self, from: data) {
             hotkey = decoded
