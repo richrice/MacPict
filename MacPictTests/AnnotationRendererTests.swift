@@ -255,6 +255,20 @@ final class AnnotationRendererTests: XCTestCase {
         XCTAssertGreaterThan(nearTo, Int(Double(nearFrom) * 1.5), "the head belongs at the to end")
     }
 
+    func testArrowShaftDoesNotProtrudePastThePointer() throws {
+        let arrow = annotation(.arrow(from: CGPoint(x: 20, y: 50), to: CGPoint(x: 180, y: 50)))
+        let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 200, height: 100) { context in
+            AnnotationRenderer.draw([arrow], in: context, scale: 1.0)
+        })
+
+        XCTAssertGreaterThan(buffer.inkCount(in: CGRect(x: 176, y: 46, width: 5, height: 9)), 0, "pointer tip")
+        XCTAssertEqual(
+            buffer.inkCount(in: CGRect(x: 181, y: 40, width: 19, height: 21)),
+            0,
+            "the round shaft cap must not continue beyond the pointer"
+        )
+    }
+
     func testZeroLengthArrowHasNoHeadAndNoNaN() throws {
         XCTAssertNil(AnnotationRenderer.arrowHead(from: CGPoint(x: 40, y: 40), to: CGPoint(x: 40, y: 40), lineWidth: 8))
 

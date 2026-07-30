@@ -2,7 +2,7 @@
 
 MacPict is a native macOS menu-bar utility that collapses the "screenshot → annotate → hand it to an AI agent" loop into a few keystrokes.
 
-Press **⌃⌥ C**. MacPict captures the display the mouse pointer is currently on and opens the snapshot in a floating window. Annotate it with lines, boxes, circles, arrows, and text, crop it down to just the part that matters, then send it straight to a CLI agent (Claude Code, Codex CLI) or a desktop app (Claude, Codex) — no file on the Desktop, no image editor, no export step.
+Press **⌃⌥ C**. MacPict captures the display the mouse pointer is currently on and opens the snapshot in a floating window. Annotate it with lines, boxes, circles, arrows, and text, crop it down to just the part that matters, then send it straight to a CLI agent (Claude Code, Codex CLI) or a desktop app (Claude, Codex) — no file cluttering the Desktop, no image editor, no export step.
 
 The capture shortcut is configurable — see [Choosing your shortcut](#choosing-your-shortcut).
 
@@ -79,16 +79,29 @@ Reinstalling over an existing copy does not revoke the grant. macOS records it a
 | `⌘Z` / `⇧⌘Z` | undo / redo — crops included |
 | `⌘⌫` | clear all annotations |
 | `[` / `]` | smaller / larger stroke and text size |
-| `⌘↩` | copy the annotated image to the clipboard, close the window |
-| `⌥⌘↩` | write the annotated PNG to a temp file and copy its path, close the window |
+| `⌘↩` | copy the annotated image and save it to `~/Pictures/Screenshots`, close the window |
+| `⌥⌘↩` | copy the path of the saved PNG, close the window |
+| `⌃⌘↩` | upload the PNG over SSH and copy its remote path, close the window |
 | `⇧⌘S` or `⌘S` | Save As… — write the annotated PNG wherever you choose, close the window |
 | `Esc` | cancel the current text edit, otherwise close the window |
 | `⌘W` | close the window |
 | `⌘,` | settings |
 
-`⌘↩` is the primary route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a file path is easier to hand over than a binary blob.
+`⌘↩` is the primary local route: Claude Code, Codex CLI, and the Claude and Codex desktop apps all accept a pasted image. `⌥⌘↩` is for flows where a local file path is easier to hand over than a binary blob. Both routes also keep the annotated PNG in `~/Pictures/Screenshots`, so a missed paste does not lose the result and a copied path remains valid.
 
-`⇧⌘S` is the third route, and the only one that produces something you still have tomorrow: it opens a save panel, and the annotated PNG goes wherever you point it, at the same native pixel resolution as the other two. The panel comes back to the folder you last saved into, and the name is prefilled as `MacPict-<timestamp>.png`. Cancelling the panel changes nothing — the snapshot and every annotation on it are still there. Plain `⌘S` does the same thing: a snapshot has nowhere to save *back* to, so there is no second meaning for it to have.
+`⌃⌘↩` is the remote route for a CLI running on Linux over SSH. Configure an **SSH target** in MacPict Settings using either `user@host` or an alias from `~/.ssh/config`. MacPict saves the PNG locally, streams it to `~/.cache/macpict` on that host, and puts the image's absolute remote path on the Mac clipboard. Paste that path into the remote Codex prompt and say what to inspect.
+
+SSH delivery uses `/usr/bin/ssh`, your existing SSH configuration, and key-based authentication; it installs nothing on the remote machine. Before using it, connect once from Terminal so the host key is trusted and confirm this succeeds without a password prompt:
+
+```sh
+ssh your-target true
+```
+
+MacPict uses non-interactive SSH with a ten-second connection timeout. If authentication or upload fails, the annotation window stays open and shows the SSH error so you can fix the connection and retry.
+
+`⇧⌘S` is the explicit-location route. It opens a save panel, and the annotated PNG goes wherever you point it, at the same native pixel resolution as the automatic delivery routes. Save As writes only to that chosen location; it does not create a second copy in the screenshots folder. The panel comes back to the folder you last saved into, and the name is prefilled as `MacPict-<timestamp>.png`. Cancelling the panel changes nothing — the snapshot and every annotation on it are still there. Plain `⌘S` does the same thing: a snapshot has nowhere to save *back* to, so there is no second meaning for it to have.
+
+Every automatically saved copy is named `MacPict-<timestamp>.png`. If two copies happen in the same second, MacPict adds a numeric suffix rather than replacing the first one.
 
 A capture opens with the **crop tool already selected**, because the usual first move is to tighten the shot to what matters. Once you crop, the tool reverts to whatever you had before, so you land straight in annotating.
 

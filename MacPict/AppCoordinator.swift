@@ -19,6 +19,7 @@ final class AppCoordinator: NSObject {
     }
 
     private static let saveFailureDescription = "Saving the image failed"
+    private static let uploadFailureDescription = "Uploading the image failed"
 
     private static let idleSymbol = "camera.viewfinder"
     private static let successSymbol = "checkmark.circle.fill"
@@ -49,6 +50,9 @@ final class AppCoordinator: NSObject {
     /// Doubles as the panel-is-up flag: a save request is ignored while this is non-nil, so the
     /// user cannot stack sheets on one window, and the tests await it to know the save finished.
     private(set) var saveTask: Task<Void, Never>?
+    /// Doubles as the in-flight flag so repeated shortcut presses cannot start concurrent uploads
+    /// of the same snapshot.
+    private(set) var uploadTask: Task<Void, Never>?
     /// Every shortcut handed to `GlobalHotkeyManager`, in order. Internal so the tests can
     /// assert on the coordinator's decision — which shortcut, and how many times — rather
     /// than on Carbon's registration result, which any other running application can change
@@ -293,7 +297,7 @@ final class AppCoordinator: NSObject {
         } catch {
             // The window stays open. Destroying the user's annotations because a write
             // failed is the worst thing this app could do.
-            report("\(action.failureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(action.failureDescription, error: error, on: controller)
             return
         }
         clearMessage()
@@ -326,7 +330,7 @@ final class AppCoordinator: NSObject {
         do {
             png = try exportedPNG(of: controller.document)
         } catch {
-            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(Self.saveFailureDescription, error: error, on: controller)
             return
         }
         saveTask = Task { [weak self] in
@@ -349,12 +353,62 @@ final class AppCoordinator: NSObject {
         do {
             try delivery.save(png, to: url)
         } catch {
-            report("\(Self.saveFailureDescription): \(String(describing: error))", to: AppLogger.delivery)
+            reportDeliveryFailure(Self.saveFailureDescription, error: error, on: controller)
             return
         }
         clearMessage()
         dismiss(controller)
         flashSuccess()
+    }
+
+    private func upload(from controller: AnnotationWindowController) {
+        guard uploadTask == nil else {
+            AppLogger.delivery.info("Ignoring an upload request while one is already in flight")
+            return
+        }
+        let png: Data
+        do {
+            png = try exportedPNG(of: controller.document)
+        } catch {
+            reportDeliveryFailure(Self.uploadFailureDescription, error: error, on: controller)
+            return
+        }
+        let target = settings.sshTarget
+        uploadTask = Task { [weak self] in
+            await self?.performUpload(png, target: target, from: controller)
+            self?.uploadTask = nil
+        }
+    }
+
+    private func performUpload(
+        _ png: Data,
+        target: String,
+        from controller: AnnotationWindowController
+    ) async {
+        do {
+            try await delivery.uploadAndCopyRemotePath(
+                png,
+                target: target,
+                timestamp: Date()
+            )
+        } catch {
+            reportDeliveryFailure(Self.uploadFailureDescription, error: error, on: controller)
+            return
+        }
+        clearMessage()
+        dismiss(controller)
+        flashSuccess()
+    }
+
+    private func reportDeliveryFailure(
+        _ title: String,
+        error: any Error,
+        on controller: AnnotationWindowController
+    ) {
+        let detail = (error as? any LocalizedError)?.errorDescription
+            ?? String(describing: error)
+        report("\(title): \(detail)", to: AppLogger.delivery)
+        controller.presentError(title: title, detail: detail)
     }
 
     private func closeActiveWindow() {
@@ -536,6 +590,10 @@ extension AppCoordinator: AnnotationWindowDelegate {
 
     func annotationWindowDidRequestCopyPath(_ controller: AnnotationWindowController) {
         deliver(.path, from: controller)
+    }
+
+    func annotationWindowDidRequestUpload(_ controller: AnnotationWindowController) {
+        upload(from: controller)
     }
 
     func annotationWindowDidRequestSaveAs(_ controller: AnnotationWindowController) {

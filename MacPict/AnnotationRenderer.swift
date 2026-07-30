@@ -39,7 +39,14 @@ enum AnnotationRenderer {
         case let .arrow(from, to):
             let start = scaled(from, scale)
             let end = scaled(to, scale)
-            stroke(linePath(from: start, to: end), style: style, scale: scale)
+            let head = arrowHead(from: start, to: end, lineWidth: style.lineWidth * scale)
+            // Stop the round-capped shaft beneath the wide base of the head. Stroking it all
+            // the way to `end` lets the cap protrude beyond the narrowing triangle, so the
+            // pointer is no longer the arrow's visible endpoint.
+            let shaftEnd = head.map {
+                CGPoint(x: ($0.left.x + $0.right.x) / 2, y: ($0.left.y + $0.right.y) / 2)
+            } ?? end
+            stroke(linePath(from: start, to: shaftEnd), style: style, scale: scale)
             drawArrowHead(from: start, to: end, style: style, scale: scale)
         case let .box(rect):
             stroke(NSBezierPath(rect: scaled(rect, scale)), style: style, scale: scale)
@@ -130,7 +137,9 @@ enum AnnotationRenderer {
         guard length.isFinite, length > 0 else { return nil }
 
         let angle = atan2(dy, dx)
-        let headLength = arrowHeadLengthFactor * lineWidth
+        // Keep short arrows pointing in the direction of the drag: their head must not push
+        // the shortened shaft backwards past `from`.
+        let headLength = min(arrowHeadLengthFactor * lineWidth, length)
         return (
             left: CGPoint(
                 x: to.x - headLength * cos(angle - arrowHeadAngle),
