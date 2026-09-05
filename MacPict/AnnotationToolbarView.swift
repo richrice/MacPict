@@ -10,9 +10,12 @@ struct AnnotationToolbarView: View {
     let onUpload: () -> Void
     let onSaveAs: () -> Void
     let onCancel: () -> Void
+    let onUndo: () -> Void
+    let onRedo: () -> Void
+    let onClear: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             tools
             separator
             colors
@@ -110,7 +113,7 @@ struct AnnotationToolbarView: View {
                 help: "Undo (⌘Z)",
                 accessibilityName: "Undo"
             ) {
-                document.undo()
+                onUndo()
             }
             iconButton(
                 "arrow.uturn.forward",
@@ -118,7 +121,7 @@ struct AnnotationToolbarView: View {
                 help: "Redo (⇧⌘Z)",
                 accessibilityName: "Redo"
             ) {
-                document.redo()
+                onRedo()
             }
             iconButton(
                 "trash",
@@ -126,7 +129,7 @@ struct AnnotationToolbarView: View {
                 help: "Clear all (⌘⌫)",
                 accessibilityName: "Clear all"
             ) {
-                document.clear()
+                onClear()
             }
         }
     }
@@ -176,7 +179,7 @@ struct AnnotationToolbarView: View {
             Button(action: onCopyImage) {
                 HStack(spacing: 4) {
                     Image(systemName: "doc.on.clipboard")
-                    Text("Copy")
+                    Text("Copy Image").fixedSize()
                 }
                 .font(.system(size: 12, weight: .semibold))
             }

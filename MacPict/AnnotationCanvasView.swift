@@ -1,6 +1,41 @@
 import AppKit
 import Combine
 
+/// Each text session owns its undo history; typing must never undo a crop or a shape.
+@MainActor
+private final class AnnotationTextView: NSTextView {
+    private let editingUndoManager = UndoManager()
+    override var undoManager: UndoManager? { editingUndoManager }
+}
+
+/// A separate hit target above the text editor: grabbing it never selects characters.
+@MainActor
+private final class AnnotationMoveHandle: NSView {
+    weak var canvas: AnnotationCanvasView?
+
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let square = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
+        NSColor.controlAccentColor.setFill()
+        square.fill()
+        NSColor.white.setStroke()
+        square.lineWidth = 2
+        square.stroke()
+        let symbol = NSImage(systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right",
+                             accessibilityDescription: nil)!
+        let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        symbol.withSymbolConfiguration(configuration)?.draw(in: bounds.insetBy(dx: 5, dy: 5))
+    }
+    override func mouseDown(with event: NSEvent) { canvas?.beginHandleDrag(with: event) }
+    override func mouseDragged(with event: NSEvent) { canvas?.mouseDragged(with: event) }
+    override func mouseUp(with event: NSEvent) { canvas?.mouseUp(with: event) }
+}
+
 /// The drawing surface. Flipped, so it shares the image raster's top-left origin and
 /// `CanvasGeometry` stays a pure scale-and-translate (PLAN D-1/D-2), and `AnnotationRenderer`
 /// can draw the preview and the export with the same code.
@@ -15,6 +50,7 @@ final class AnnotationCanvasView: NSView {
     var onUpload: (() -> Void)?
     var onSaveAs: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onInteractionHintChanged: ((String) -> Void)?
 
     /// A drag shorter than this in view points is a click that missed, not an annotation.
     private static let minimumDragExtent: CGFloat = 3
@@ -56,8 +92,24 @@ final class AnnotationCanvasView: NSView {
         /// `textOrigin` view points inside it, so this is not the committed annotation origin.
         let origin: CGPoint
         let style: AnnotationStyle
+        let original: Annotation?
+        let id: UUID
     }
 
+    private struct AnnotationDrag {
+        let original: Annotation
+        let startViewPoint: CGPoint
+        let startImagePoint: CGPoint
+        var preview: Annotation
+        var hasMoved = false
+        var usesHandle = false
+    }
+
+    private var hoverTrackingArea: NSTrackingArea?
+    private var hoverPoint: CGPoint?
+    private var hoveredAnnotationID: UUID?
+    private var moveHandle: AnnotationMoveHandle?
+    private var annotationDrag: AnnotationDrag?
     private var drag: Drag?
     private var textEditing: TextEditing?
     /// Restored after a crop-tool crop so cropping is never a mode the user has to escape.
@@ -79,7 +131,7 @@ final class AnnotationCanvasView: NSView {
                     // `imageScale` and `displayRect` under a live editor. This notification
                     // arrives *before* the document has changed, so the refit is deferred to
                     // the next layout pass, which reads the settled value.
-                    if self?.textEditing != nil { self?.needsLayout = true }
+                    self?.needsLayout = true
                 }
             }
             .store(in: &observers)
@@ -120,6 +172,7 @@ final class AnnotationCanvasView: NSView {
     static func cursor(for tool: AnnotationTool) -> NSCursor {
         switch tool {
         case .text: .iBeam
+        case .move: .openHand
         case .crop, .arrow, .box, .ellipse, .line: .crosshair
         }
     }
@@ -136,6 +189,117 @@ final class AnnotationCanvasView: NSView {
     override func resetCursorRects() {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: Self.cursor(for: document.tool))
+        if textEditing == nil, document.tool != .crop {
+            for annotation in document.annotations {
+                if let rect = textRect(for: annotation) {
+                    let visible = rect.intersection(geometry.displayRect)
+                    if !visible.isEmpty { addCursorRect(visible, cursor: .openHand) }
+                }
+            }
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                 options: [.inVisibleRect, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+                                 owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        hoverPoint = convert(event.locationInWindow, from: nil)
+        updateMoveHandle()
+    }
+
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverPoint = nil
+        if annotationDrag == nil { updateMoveHandle() }
+    }
+
+    private var movableAnnotations: [Annotation] {
+        var annotations = document.annotations.filter { $0.id != textEditing?.id }
+        if let editing = textEditing {
+            let string = editedString(of: editing)
+            if !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let placement = placement(for: string, editing: editing, geometry: geometry)
+                annotations.append(Annotation(id: editing.id,
+                                              kind: .text(origin: placement.origin, string: string, wrapWidth: placement.wrapWidth),
+                                              style: editing.style))
+            }
+        }
+        if let moving = annotationDrag {
+            annotations = annotations.map { $0.id == moving.original.id ? moving.preview : $0 }
+        }
+        return annotations
+    }
+
+    private func updateMoveHandle() {
+        let annotations = movableAnnotations
+        let target: Annotation?
+        if let moving = annotationDrag, moving.usesHandle {
+            target = moving.preview
+        } else if let point = hoverPoint, bounds.contains(point) {
+            // Include the path to the corner so the handle cannot vanish on approach.
+            if let previous = annotations.first(where: { $0.id == hoveredAnnotationID }),
+               let rect = moveTargetRect(for: previous),
+               rect.union(handleRect(for: rect)).insetBy(dx: -3, dy: -3).contains(point) {
+                target = previous
+            } else {
+                target = annotations.reversed().first { moveTargetRect(for: $0)?.contains(point) == true }
+            }
+        } else {
+            target = nil
+        }
+        guard let target, let rect = moveTargetRect(for: target),
+              rect.intersects(geometry.displayRect) else {
+            hoveredAnnotationID = nil
+            moveHandle?.removeFromSuperview()
+            moveHandle = nil
+            return
+        }
+        hoveredAnnotationID = target.id
+        let handle = moveHandle ?? AnnotationMoveHandle()
+        handle.canvas = self
+        handle.identifier = NSUserInterfaceItemIdentifier("annotationMoveHandle")
+        handle.toolTip = "Drag to move annotation"
+        handle.setAccessibilityLabel("Move annotation")
+        handle.frame = handleRect(for: rect)
+        addSubview(handle, positioned: .above, relativeTo: nil)
+        moveHandle = handle
+        window?.invalidateCursorRects(for: handle)
+    }
+
+    private func handleRect(for textRect: CGRect) -> CGRect {
+        let display = geometry.displayRect
+        return CGRect(x: min(max(textRect.maxX - 12, display.minX), max(display.minX, display.maxX - 24)),
+                      y: min(max(textRect.minY - 12, display.minY), max(display.minY, display.maxY - 24)),
+                      width: 24, height: 24)
+    }
+
+    fileprivate func beginHandleDrag(with event: NSEvent) {
+        guard let id = hoveredAnnotationID,
+              let target = movableAnnotations.first(where: { $0.id == id }) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // Latch the gesture before committing so the handle remains above the editor
+        // during teardown. Click count has no meaning on this dedicated move target.
+        annotationDrag = AnnotationDrag(original: target, startViewPoint: point,
+                            startImagePoint: geometry.imagePoint(fromView: point),
+                            preview: target, usesHandle: true)
+        commitTextEditing()
+        guard let committed = document.annotations.first(where: { $0.id == id }) else {
+            cancelAnnotationDrag()
+            return
+        }
+        annotationDrag = AnnotationDrag(original: committed, startViewPoint: point,
+                            startImagePoint: geometry.imagePoint(fromView: point),
+                            preview: committed, usesHandle: true)
+        window?.makeFirstResponder(self)
+        updateMoveHandle()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -188,13 +352,34 @@ final class AnnotationCanvasView: NSView {
         let imageOrigin = geometry.viewPoint(fromImage: .zero)
         context.cgContext.translateBy(x: imageOrigin.x, y: imageOrigin.y)
         let scale = 1 / geometry.imageScale
-        AnnotationRenderer.draw(document.annotations, in: context, scale: scale)
+        let annotations = document.annotations
+            .filter { $0.id != textEditing?.original?.id }
+            .map { annotation in
+                if let moving = annotationDrag, annotation.id == moving.original.id { return moving.preview }
+                return annotation
+            }
+        AnnotationRenderer.draw(annotations, in: context, scale: scale)
         if let pending = inProgressAnnotation {
             AnnotationRenderer.draw(pending, in: context, scale: scale)
         }
         context.restoreGraphicsState()
 
         drawImageBoundary(displayRect)
+        if document.tool == .move {
+            context.saveGraphicsState()
+            NSBezierPath(rect: displayRect).setClip()
+            for annotation in annotations {
+                guard let rect = moveTargetRect(for: annotation) else { continue }
+                let border = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+                NSColor.white.setStroke()
+                border.lineWidth = 3
+                border.stroke()
+                NSColor.controlAccentColor.setStroke()
+                border.lineWidth = 1.5
+                border.stroke()
+            }
+            context.restoreGraphicsState()
+        }
 
         if let drag, drag.isCrop {
             drawCropOverlay(for: drag, displayRect: displayRect, geometry: geometry)
@@ -227,6 +412,8 @@ final class AnnotationCanvasView: NSView {
     override func layout() {
         super.layout()
         if let textEditing { fitEditor(textEditing) }
+        window?.invalidateCursorRects(for: self)
+        updateMoveHandle()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -244,10 +431,30 @@ final class AnnotationCanvasView: NSView {
         let inset = clampInset(isCrop: isCrop)
         let imagePoint = imagePoint(for: viewPoint, geometry: geometry, inset: inset)
 
+        let existing = document.tool == .move
+            ? document.annotations.reversed().first(where: { moveTargetRect(for: $0)?.contains(viewPoint) == true })
+            : textAnnotation(at: viewPoint)
+        if !event.modifierFlags.contains(.command), let existing {
+            if document.tool == .text || (event.clickCount == 2 && document.tool != .move) {
+                editText(existing, with: event)
+                return
+            }
+            if !isCrop {
+                // Wait for mouse-up to distinguish a Text-tool click from a move.
+                annotationDrag = AnnotationDrag(
+                    original: existing,
+                    startViewPoint: viewPoint,
+                    startImagePoint: geometry.imagePoint(fromView: viewPoint),
+                    preview: existing
+                )
+                return
+            }
+        }
         if !isCrop, document.tool == .text {
             beginTextEditing(at: imagePoint, geometry: geometry)
             return
         }
+        guard isCrop || document.tool != .move else { return }
         drag = Drag(
             startImagePoint: imagePoint,
             startViewPoint: viewPoint,
@@ -260,6 +467,10 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if annotationDrag != nil {
+            updateAnnotationDrag(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         guard let inset = drag?.clampInset else { return }
         let viewPoint = convert(event.locationInWindow, from: nil)
         drag?.currentImagePoint = imagePoint(for: viewPoint, geometry: geometry, inset: inset)
@@ -267,6 +478,19 @@ final class AnnotationCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if annotationDrag != nil {
+            updateAnnotationDrag(at: convert(event.locationInWindow, from: nil))
+            let finished = annotationDrag!
+            annotationDrag = nil
+            if finished.hasMoved {
+                document.replace(finished.original.id, with: finished.preview)
+            }
+            hoverPoint = convert(event.locationInWindow, from: nil)
+            if finished.usesHandle { updateMoveHandle() }
+            needsDisplay = true
+            refreshCursor(for: document.tool)
+            return
+        }
         guard let drag else { return }
         self.drag = nil
         needsDisplay = true
@@ -302,13 +526,33 @@ final class AnnotationCanvasView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
         guard flags.contains(.command) else { return false }
+        cancelAnnotationDrag()
         let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+
+        if let editor = textEditing?.textView {
+            if flags == [.command] {
+                switch key {
+                case "a": editor.selectAll(nil)
+                case "c": editor.copy(nil)
+                case "x": editor.cut(nil)
+                case "v": editor.paste(nil)
+                case "z": editor.breakUndoCoalescing(); editor.undoManager?.undo()
+                case "\u{7f}": editor.deleteToBeginningOfLine(nil)
+                default: break
+                }
+                if ["a", "c", "x", "v", "z", "\u{7f}"].contains(key) { return true }
+            }
+            if flags == [.command, .shift], key == "z" {
+                editor.undoManager?.redo()
+                return true
+            }
+        }
 
         if flags == [.command] {
             switch key {
             case "z": document.undo()
             case "w": onCancel?()
-            case "\u{7f}": document.clear()
+            case "\u{7f}": clearAnnotations()
             // Pending text is resolved by the controller's single delivery path, not here.
             case "\r", "\u{3}": onCopyImage?()
             // ⇧⌘S is the Save As shortcut, but a snapshot is an untitled document with nowhere
@@ -352,11 +596,14 @@ final class AnnotationCanvasView: NSView {
         }
         switch key {
         case "c": document.tool = .crop
+        case "v": document.tool = .move
         case "[": document.cycleSize(forward: false)
         case "]": document.cycleSize(forward: true)
         // While a text field is being edited it owns Escape (see the delegate below), so
         // reaching here means there is nothing to cancel but the window itself.
-        case "\u{1b}": onCancel?()
+        case "\u{1b}":
+            if annotationDrag != nil { cancelAnnotationDrag() }
+            else { onCancel?() }
         default: super.keyDown(with: event)
         }
     }
@@ -407,7 +654,7 @@ final class AnnotationCanvasView: NSView {
         guard !isCrop else { return 0 }
         switch document.tool {
         case .arrow, .line, .box, .ellipse: return document.style.lineWidth / 2
-        case .text, .crop: return 0
+        case .text, .crop, .move: return 0
         }
     }
 
@@ -422,16 +669,136 @@ final class AnnotationCanvasView: NSView {
         case .line: return Annotation(kind: .line(from: from, to: to), style: style)
         case .box: return Annotation(kind: .box(rect(from: from, to: to)), style: style)
         case .ellipse: return Annotation(kind: .ellipse(rect(from: from, to: to)), style: style)
-        case .text, .crop: return nil
+        case .text, .crop, .move: return nil
         }
     }
 
     private func trackTool(_ tool: AnnotationTool) {
+        if tool != lastTool {
+            cancelAnnotationDrag()
+            commitTextEditing()
+        }
         if tool == .crop, lastTool != .crop {
             toolBeforeCrop = lastTool
         }
         lastTool = tool
         refreshCursor(for: tool)
+        updateInteractionHint(tool: tool)
+    }
+
+    var interactionHint: String { interactionHint(for: document.tool) }
+
+    private func interactionHint(for tool: AnnotationTool) -> String {
+        if textEditing != nil {
+            return "Return: new line • Hover text, then drag its corner handle to move • ⌘↩: copy image"
+        }
+        switch tool {
+        case .crop: return "Drag to crop • 1–5: annotate • ⌘↩: copy image, then paste into your agent"
+        case .text: return "Click to add or edit text • Hover a note for its move handle • ⌘↩: copy image"
+        case .move: return "Drag any outlined annotation to move • Text (5): edit text • ⌘Z: undo • ⌘↩: copy image"
+        default: return "Hover annotations for a move handle • ⌘-drag: crop • ⌘↩: copy image"
+        }
+    }
+
+    private func updateInteractionHint(tool: AnnotationTool? = nil) {
+        onInteractionHintChanged?(interactionHint(for: tool ?? document.tool))
+    }
+
+    func undoAnnotation() {
+        commitTextEditing()
+        document.undo()
+    }
+
+    func redoAnnotation() {
+        commitTextEditing()
+        document.redo()
+    }
+
+    func clearAnnotations() {
+        commitTextEditing()
+        document.clear()
+    }
+
+    private func annotationBounds(_ annotation: Annotation) -> CGRect {
+        let inset = annotation.style.lineWidth / 2
+        switch annotation.kind {
+        case let .text(origin, string, width):
+            return CGRect(origin: origin, size: AnnotationRenderer.textSize(for: string, style: annotation.style, maxWidth: width))
+        case let .box(rect), let .ellipse(rect):
+            return rect.standardized.insetBy(dx: -inset, dy: -inset)
+        case let .line(from, to):
+            return rect(from: from, to: to).insetBy(dx: -inset, dy: -inset)
+        case let .arrow(from, to):
+            var bounds = rect(from: from, to: to).insetBy(dx: -inset, dy: -inset)
+            if let head = AnnotationRenderer.arrowHead(from: from, to: to, lineWidth: annotation.style.lineWidth) {
+                bounds = bounds.union(rect(from: head.left, to: head.right))
+            }
+            return bounds
+        }
+    }
+
+    private func moveTargetRect(for annotation: Annotation) -> CGRect? {
+        let rect = geometry.viewRect(fromImage: annotationBounds(annotation))
+        return rect.insetBy(dx: -max(8, (44 - rect.width) / 2),
+                            dy: -max(8, (44 - rect.height) / 2))
+    }
+
+    private func textRect(for annotation: Annotation) -> CGRect? {
+        guard case let .text(origin, string, wrapWidth) = annotation.kind else { return nil }
+        let size = AnnotationRenderer.textSize(for: string, style: annotation.style, maxWidth: wrapWidth)
+        let rect = geometry.viewRect(fromImage: CGRect(origin: origin, size: size))
+        if document.tool == .move {
+            // A whole note is a target, even when its glyphs are tiny at capture scale.
+            return rect.insetBy(dx: -max(8, (44 - rect.width) / 2),
+                                dy: -max(8, (44 - rect.height) / 2))
+        }
+        return rect.insetBy(dx: -4, dy: -4)
+    }
+
+    private func textAnnotation(at viewPoint: CGPoint) -> Annotation? {
+        guard geometry.displayRect.contains(viewPoint) else { return nil }
+        return document.annotations.reversed().first { textRect(for: $0)?.contains(viewPoint) == true }
+    }
+
+    private func editText(_ annotation: Annotation, with event: NSEvent) {
+        beginTextEditing(at: .zero, geometry: geometry, original: annotation)
+        if let editor = textEditing?.textView {
+            let point = editor.convert(event.locationInWindow, from: nil)
+            editor.setSelectedRange(NSRange(location: editor.characterIndexForInsertion(at: point), length: 0))
+        }
+    }
+
+    private func updateAnnotationDrag(at viewPoint: CGPoint) {
+        guard var moving = annotationDrag else { return }
+        let extent = max(abs(viewPoint.x - moving.startViewPoint.x), abs(viewPoint.y - moving.startViewPoint.y))
+        guard moving.hasMoved || extent >= Self.minimumDragExtent else { return }
+        moving.hasMoved = true
+        let point = geometry.imagePoint(fromView: viewPoint)
+        let bounds = annotationBounds(moving.original)
+        let crop = geometry.sourceRect
+        let dx = max(crop.minX - bounds.minX, min(point.x - moving.startImagePoint.x, crop.maxX - bounds.maxX))
+        let dy = max(crop.minY - bounds.minY, min(point.y - moving.startImagePoint.y, crop.maxY - bounds.maxY))
+        func shifted(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x + dx, y: point.y + dy) }
+        switch moving.original.kind {
+        case let .text(origin, string, width):
+            moving.preview.kind = .text(origin: shifted(origin), string: string, wrapWidth: width)
+        case let .line(from, to): moving.preview.kind = .line(from: shifted(from), to: shifted(to))
+        case let .arrow(from, to): moving.preview.kind = .arrow(from: shifted(from), to: shifted(to))
+        case let .box(rect): moving.preview.kind = .box(rect.offsetBy(dx: dx, dy: dy))
+        case let .ellipse(rect): moving.preview.kind = .ellipse(rect.offsetBy(dx: dx, dy: dy))
+        }
+        annotationDrag = moving
+        NSCursor.closedHand.set()
+        if moving.usesHandle { updateMoveHandle() }
+        needsDisplay = true
+    }
+
+    private func cancelAnnotationDrag() {
+        guard annotationDrag != nil else { return }
+        annotationDrag = nil
+        updateMoveHandle()
+        needsDisplay = true
+        refreshCursor(for: document.tool)
     }
 
     /// Invalidating the rects alone only takes effect the next time the pointer moves, so a
@@ -446,12 +813,22 @@ final class AnnotationCanvasView: NSView {
             bounds: bounds,
             isEditingText: textEditing != nil
         ) else { return }
-        Self.cursor(for: tool).set()
+        if tool != .crop, let pointer, textAnnotation(at: pointer) != nil {
+            NSCursor.openHand.set()
+        } else {
+            Self.cursor(for: tool).set()
+        }
     }
 
-    private func beginTextEditing(at imagePoint: CGPoint, geometry: CanvasGeometry) {
-        let style = document.style
-        let textView = NSTextView(frame: .zero)
+    private func beginTextEditing(at imagePoint: CGPoint, geometry: CanvasGeometry, original: Annotation? = nil) {
+        let style = original?.style ?? document.style
+        var origin = imagePoint
+        var string = ""
+        if case let .text(anchor, text, _) = original?.kind {
+            origin = anchor
+            string = text
+        }
+        let textView = AnnotationTextView(frame: .zero)
         textView.font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
         textView.textColor = style.color.nsColor
         textView.insertionPointColor = style.color.nsColor
@@ -459,9 +836,10 @@ final class AnnotationCanvasView: NSView {
         textView.backgroundColor = .clear
         textView.isRichText = false
         textView.importsGraphics = false
-        // ⌘Z belongs to the document, and the canvas takes it before the view ever sees it;
-        // leaving a second undo stack armed here would only be a way for them to disagree.
-        textView.allowsUndo = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.setAccessibilityLabel("Annotation text")
         textView.isVerticallyResizable = false
         textView.isHorizontallyResizable = false
         textView.textContainerInset = .zero
@@ -478,11 +856,15 @@ final class AnnotationCanvasView: NSView {
         textView.textContainer?.heightTracksTextView = false
         textView.delegate = self
 
-        let editing = TextEditing(textView: textView, origin: imagePoint, style: style)
+        textView.string = string
+        let editing = TextEditing(textView: textView, origin: origin, style: style, original: original, id: original?.id ?? UUID())
+        textEditing = editing
         addSubview(textView)
         fitEditor(editing)
         window?.makeFirstResponder(textView)
-        textEditing = editing
+        textView.setSelectedRange(NSRange(location: (string as NSString).length, length: 0))
+        needsDisplay = true
+        updateInteractionHint()
     }
 
     /// Where the glyphs actually go, in image pixels: the point the user clicked, pulled back
@@ -519,23 +901,27 @@ final class AnnotationCanvasView: NSView {
         let source = geometry.sourceRect
         // Measured with no wrap first, which already honours the newlines the user typed.
         let natural = AnnotationRenderer.textSize(for: string, style: editing.style, maxWidth: nil)
-        let wrapWidth: CGFloat? = natural.width > source.width ? source.width : nil
+        let previousWidth: CGFloat?
+        if case let .text(_, _, width) = editing.original?.kind { previousWidth = width }
+        else { previousWidth = nil }
+        let wrapWidth: CGFloat? = previousWidth.map { min($0, source.width) }
+            ?? (natural.width > source.width ? source.width : nil)
         let size = wrapWidth == nil
             ? natural
             : AnnotationRenderer.textSize(for: string, style: editing.style, maxWidth: wrapWidth)
-        // Wrapped text is as wide as the image allows, so there is nowhere left to shift it to:
-        // it starts at the left edge. Unwrapped text keeps the shift-to-fit behaviour.
-        let x = wrapWidth == nil ? min(anchor.x, max(source.minX, source.maxX - size.width)) : source.minX
+        // Keep new wrapped notes at the crop's left edge, while reopened notes retain
+        // their original anchor and wrapping even if the crop has since expanded.
+        let x = wrapWidth != nil && previousWidth == nil ? source.minX
+            : max(source.minX, min(anchor.x, max(source.minX, source.maxX - size.width)))
         // The vertical shift matters more now than it did: several lines can run off the bottom
         // where one line could not.
-        let y = min(anchor.y, max(source.minY, source.maxY - size.height))
+        let y = max(source.minY, min(anchor.y, max(source.minY, source.maxY - size.height)))
         return (CGPoint(x: x, y: y), wrapWidth)
     }
 
-    /// The string as it will be drawn: trimmed, so the editor and the commit measure the same
-    /// characters and cannot place them differently.
+    /// Preserve indentation and blank lines exactly as entered.
     private func editedString(of editing: TextEditing) -> String {
-        editing.textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        editing.textView.string
     }
 
     /// Places and sizes the editor for the geometry and the text in force *now*. Called again
@@ -589,7 +975,9 @@ final class AnnotationCanvasView: NSView {
         let laidOut = editing.textView.layoutManager.map { manager -> CGSize in
             if let container = editing.textView.textContainer {
                 manager.ensureLayout(for: container)
-                return manager.usedRect(for: container).size
+                let used = manager.usedRect(for: container)
+                // TextKit puts the caret after a trailing newline in an extra line fragment.
+                return CGSize(width: used.width, height: max(used.maxY, manager.extraLineFragmentRect.maxY))
             }
             return .zero
         } ?? .zero
@@ -607,6 +995,7 @@ final class AnnotationCanvasView: NSView {
             width: width,
             height: height
         )
+        updateMoveHandle()
     }
 
     /// Measured, not ported. The old `NSTextField` held its glyphs `cellSize.width / 2` inside
@@ -630,11 +1019,22 @@ final class AnnotationCanvasView: NSView {
         // text, and the wrap width stored on the annotation is exactly the one on screen.
         let placement = placement(for: string, editing: editing, geometry: geometry)
         endEditing(editing)
-        guard !string.isEmpty else { return }
-        document.append(Annotation(
-            kind: .text(origin: placement.origin, string: string, wrapWidth: placement.wrapWidth),
-            style: editing.style
-        ))
+        let isBlank = string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let original = editing.original {
+            // Merely opening and closing a label must not move it or consume an undo step.
+            if case let .text(_, previous, _) = original.kind, previous == string { return }
+            document.replace(original.id, with: isBlank ? nil : Annotation(
+                id: original.id,
+                kind: .text(origin: placement.origin, string: string, wrapWidth: placement.wrapWidth),
+                style: editing.style
+            ))
+        } else if !isBlank {
+            document.append(Annotation(
+                id: editing.id,
+                kind: .text(origin: placement.origin, string: string, wrapWidth: placement.wrapWidth),
+                style: editing.style
+            ))
+        }
     }
 
     /// Discards a half-typed label. A no-op when nothing is being edited.
@@ -649,17 +1049,17 @@ final class AnnotationCanvasView: NSView {
         editing.textView.delegate = nil
         editing.textView.removeFromSuperview()
         window?.makeFirstResponder(self)
+        needsDisplay = true
+        refreshCursor(for: document.tool)
+        updateInteractionHint()
     }
 }
 
 extension AnnotationCanvasView: NSTextViewDelegate {
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
-        case #selector(NSResponder.insertNewline(_:)):
-            // Return still commits: that is the fast path the whole app is built around.
-            commitTextEditing()
-            return true
-        case #selector(NSResponder.insertLineBreak(_:)):
+        case #selector(NSResponder.insertNewline(_:)),
+             #selector(NSResponder.insertLineBreak(_:)):
             // ⇧↩ starts a second line under the first. AppKit's own `insertLineBreak:` inserts
             // U+2028, which lays out identically but is a surprise to anything that later reads
             // the string, so a plain newline goes in instead.

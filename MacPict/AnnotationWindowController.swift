@@ -38,6 +38,7 @@ final class AnnotationWindowController: NSObject {
     private(set) var lastPresentedError: PresentedError?
 
     private static let toolbarHeight: CGFloat = 44
+    private static let hintHeight: CGFloat = 26
     private static let screenInset: CGFloat = 40
     /// Below this width the toolbar starts clipping its delivery controls, so a tight crop
     /// letterboxes instead.
@@ -82,6 +83,7 @@ final class AnnotationWindowController: NSObject {
         // away is not a floating annotation window.
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
+        panel.acceptsMouseMovedEvents = true
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
         panel.contentMinSize = Self.minimumContentSize
@@ -151,7 +153,10 @@ final class AnnotationWindowController: NSObject {
                 onCopyPath: { [weak self] in self?.deliver(.copyPath) },
                 onUpload: { [weak self] in self?.deliver(.upload) },
                 onSaveAs: { [weak self] in self?.deliver(.saveAs) },
-                onCancel: { [weak self] in self?.deliver(.cancel) }
+                onCancel: { [weak self] in self?.deliver(.cancel) },
+                onUndo: { [weak self] in self?.canvas.undoAnnotation() },
+                onRedo: { [weak self] in self?.canvas.redoAnnotation() },
+                onClear: { [weak self] in self?.canvas.clearAnnotations() }
             )
         )
         toolbar.translatesAutoresizingMaskIntoConstraints = false
@@ -159,6 +164,12 @@ final class AnnotationWindowController: NSObject {
         canvas.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(toolbar)
         container.addSubview(canvas)
+        let hint = NSTextField(labelWithString: canvas.interactionHint)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        hint.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hint)
+        canvas.onInteractionHintChanged = { [weak hint] text in hint?.stringValue = text }
 
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: container.topAnchor),
@@ -168,7 +179,11 @@ final class AnnotationWindowController: NSObject {
             canvas.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
             canvas.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             canvas.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            canvas.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -5),
+            hint.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -10),
+            hint.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -5),
+            hint.heightAnchor.constraint(equalToConstant: Self.hintHeight - 10)
         ])
         return container
     }
@@ -235,10 +250,10 @@ final class AnnotationWindowController: NSObject {
         let available = screen.visibleFrame.insetBy(dx: screenInset, dy: screenInset)
         let maxCanvas = CGSize(
             width: max(available.width, minimumContentSize.width),
-            height: max(available.height - toolbarHeight, minimumContentSize.height - toolbarHeight)
+            height: max(available.height - toolbarHeight - hintHeight, minimumContentSize.height - toolbarHeight - hintHeight)
         )
         guard outputSize.width > 0, outputSize.height > 0 else {
-            return CGSize(width: maxCanvas.width, height: maxCanvas.height + toolbarHeight)
+            return CGSize(width: maxCanvas.width, height: maxCanvas.height + toolbarHeight + hintHeight)
         }
         // Capped at the image's natural point size: a 200 px crop blown up to fill the screen
         // would be a worse view of it, not a better one.
@@ -250,7 +265,7 @@ final class AnnotationWindowController: NSObject {
         )
         return CGSize(
             width: max(outputSize.width * scale, minimumContentSize.width),
-            height: max(outputSize.height * scale + toolbarHeight, minimumContentSize.height)
+            height: max(outputSize.height * scale + toolbarHeight + hintHeight, minimumContentSize.height)
         )
     }
 }

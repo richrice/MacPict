@@ -225,7 +225,10 @@ private struct TextLayout {
 
     /// Image pixels. Line spacing comes from the font's own metrics, so it scales with
     /// `style.fontSize` without a separate absolute value to keep in step.
-    var usedSize: CGSize { manager.usedRect(for: container).size }
+    var usedSize: CGSize {
+        let used = manager.usedRect(for: container)
+        return CGSize(width: used.width, height: max(used.maxY, manager.extraLineFragmentRect.maxY))
+    }
 
     /// One entry per rendered line, in the order they stack downward: the characters on that
     /// line and the top-left of its line box relative to the text block's origin, in image

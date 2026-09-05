@@ -72,12 +72,15 @@ Reinstalling over an existing copy does not revoke the grant. macOS records it a
 | `⌃⌥ C` | capture the display under the pointer (configurable) |
 | `1`…`5` | arrow / box / ellipse / line / text tool |
 | `6` or `C` | crop tool |
+| `7` or `V` | Move tool — drag any outlined annotation |
 | `⌘`-drag | crop without leaving the tool you are on |
 | `⇧⌘R` | reset the crop back to the full display |
-| `⇧↩` | new line while typing text |
-| `↩` | commit the text annotation |
+| `↩` or `⇧↩` | new line while typing text |
+| Click outside text | finish the text annotation |
+| Click text with the Text tool, or double-click with a drawing tool | edit an existing text annotation |
+| Hover an annotation, then drag its corner handle | move it; ⌘Z undoes the move |
 | `⌘Z` / `⇧⌘Z` | undo / redo — crops included |
-| `⌘⌫` | clear all annotations |
+| `⌘⌫` | delete to the start of the line while editing text; otherwise clear all annotations |
 | `[` / `]` | smaller / larger stroke and text size |
 | `⌘↩` | copy the annotated image and save it to `~/Pictures/Screenshots`, close the window |
 | `⌥⌘↩` | copy the path of the saved PNG, close the window |
@@ -109,7 +112,13 @@ The pointer tells you which mode you are in: a crosshair for crop and the four s
 
 ## Text
 
-Text wraps only when it has to. A short note near an edge shifts to stay whole rather than reflowing; a string too wide for the visible image wraps at the crop edge. `⇧↩` breaks a line deliberately at any point.
+Text works like a regular editor: Return adds a line, arrow keys move the caret between lines, and standard select-all, cut, copy, paste, undo, and redo shortcuts work while typing. Click outside to finish, or use Copy Image (⌘↩) directly. Click an existing label with the Text tool, or double-click it with a drawing tool, to revise it. Escape cancels that edit and restores the original. Erase all of a label’s text and click outside to delete it; document Undo restores it.
+
+**To move any annotation, hover over it and drag the small square handle at its upper-right corner.** This works for text, arrows, lines, boxes, and circles. For text you are still typing, grabbing the handle finishes the edit and moves the note in one gesture. Clicking or double-clicking the handle never opens the text editor. The handle stays visible as you move toward it and hides when you leave the annotation.
+
+Moving preserves the annotation’s size, formatting, and line breaks, stays within the crop, and is undoable. Escape during a drag cancels the move. Handles are editing controls and never appear in the copied image. The **Move** tool (four-way arrow, or `7` / `V` when not typing) also lets you drag anywhere inside an outlined annotation; switch to Text to edit its contents.
+
+Text wraps only when it has to. A short note near an edge shifts to stay whole rather than reflowing; a string too wide for the visible image wraps at the crop edge. `↩` breaks a line deliberately at any point.
 
 Annotations cannot leave the visible image. Drag a shape past the edge and it stops there, with its stroke landing on the boundary rather than being cut flat; type past the edge and the text stops too. That rule is the same for every tool.
 

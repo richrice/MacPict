@@ -3,8 +3,8 @@ import CoreGraphics
 import Foundation
 
 enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
-    // crop is appended last so the pre-existing 1…5 mapping is untouched.
-    case arrow, box, ellipse, line, text, crop
+    // New tools are appended so existing number shortcuts stay unchanged.
+    case arrow, box, ellipse, line, text, crop, move
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .line: "line.diagonal"
         case .text: "textformat"
         case .crop: "crop"
+        case .move: "arrow.up.and.down.and.arrow.left.and.right"
         }
     }
 
@@ -27,11 +28,12 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .line: "Line"
         case .text: "Text"
         case .crop: "Crop"
+        case .move: "Move"
         }
     }
 
     // Must stay aligned with the CaseIterable order above: the annotation window binds
-    // the number keys 1…6 positionally, and AnnotationModelTests locks that alignment.
+    // the number keys 1…7 positionally, and AnnotationModelTests locks that alignment.
     var keyEquivalent: String {
         switch self {
         case .arrow: "1"
@@ -40,6 +42,7 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
         case .line: "4"
         case .text: "5"
         case .crop: "6"
+        case .move: "7"
         }
     }
 }
@@ -174,6 +177,18 @@ final class AnnotationDocument: ObservableObject {
     func append(_ annotation: Annotation) {
         pushUndo()
         annotations.append(annotation)
+    }
+
+    /// Editing and deleting preserve stacking order and form one undoable operation.
+    func replace(_ id: UUID, with annotation: Annotation?) {
+        guard let index = annotations.firstIndex(where: { $0.id == id }) else {
+            preconditionFailure("Cannot edit an annotation outside this document")
+        }
+        guard annotation != annotations[index] else { return }
+        precondition(annotation == nil || annotation?.id == id)
+        pushUndo()
+        if let annotation { annotations[index] = annotation }
+        else { annotations.remove(at: index) }
     }
 
     func undo() {

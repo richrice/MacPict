@@ -156,7 +156,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
         return hosting.rootView
     }
 
-    private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, _ modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+    private func mouseEvent(_ type: NSEvent.EventType, at point: CGPoint, _ modifiers: NSEvent.ModifierFlags = [], clickCount: Int = 1) throws -> NSEvent {
         try XCTUnwrap(NSEvent.mouseEvent(
             with: type,
             location: point,
@@ -165,7 +165,7 @@ final class AnnotationWindowControllerTests: XCTestCase {
             windowNumber: 0,
             context: nil,
             eventNumber: 0,
-            clickCount: 1,
+            clickCount: clickCount,
             pressure: 1
         ))
     }
@@ -1072,8 +1072,8 @@ final class AnnotationWindowControllerTests: XCTestCase {
                              "two lines should be taller than one")
     }
 
-    /// The fast path: Return commits, and must not leave a newline in the string.
-    func testReturnCommitsAndDoesNotInsertANewline() throws {
+    /// Return behaves like a normal editor; delivery remains available through Command-Return.
+    func testReturnAddsANewlineAndKeepsEditing() throws {
         try useLargeDocument()
         controller.document.crop(to: CGRect(x: 100, y: 100, width: 600, height: 400))
         let canvas = try canvas()
@@ -1081,8 +1081,397 @@ final class AnnotationWindowControllerTests: XCTestCase {
         let editor = try beginTextEdit("one line", atImagePoint: CGPoint(x: 200, y: 200))
         XCTAssertTrue(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
 
-        XCTAssertEqual(committedTexts(), ["one line"])
-        XCTAssertTrue(canvas.subviews.isEmpty, "Return should have committed and torn the editor down")
+        XCTAssertEqual(editor.string, "one line\n")
+        XCTAssertEqual(committedTexts(), [])
+        XCTAssertTrue(editor.superview === canvas)
+        editor.insertText("second line", replacementRange: editor.selectedRange())
+        try pressCopyImage()
+        XCTAssertEqual(delegate.textsWhenNotified, [["one line\nsecond line"]])
+    }
+
+    private func reopenText(at origin: CGPoint) throws -> NSTextView {
+        let canvas = try canvas()
+        let point = canvas.geometry.viewPoint(fromImage: CGPoint(x: origin.x + 3, y: origin.y + 3))
+        canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(fromCanvas: point)))
+        canvas.mouseUp(with: try mouseEvent(.leftMouseUp, at: try windowPoint(fromCanvas: point)))
+        return try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextView }.first)
+    }
+
+    func testReeditingPreservesIdentityAndSupportsUndoRedo() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("first\nsecond", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = try XCTUnwrap(controller.document.annotations.first)
+        let editor = try reopenText(at: origin)
+        XCTAssertEqual(editor.string, "first\nsecond")
+        editor.insertText("revised", replacementRange: NSRange(location: 0, length: 5))
+        canvas.commitTextEditing()
+        XCTAssertEqual(committedTexts(), ["revised\nsecond"])
+        XCTAssertEqual(controller.document.annotations.first?.id, original.id)
+        controller.document.undo()
+        XCTAssertEqual(controller.document.annotations, [original])
+        controller.document.redo()
+        XCTAssertEqual(committedTexts(), ["revised\nsecond"])
+    }
+
+    func testCancelReeditRestoresOriginalAndNoOpEditDoesNotConsumeUndo() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("original", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let editor = try reopenText(at: origin)
+        editor.insertText("changed", replacementRange: NSRange(location: 0, length: 8))
+        XCTAssertTrue(canvas.textView(editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))))
+        XCTAssertEqual(controller.document.annotations, original)
+        _ = try reopenText(at: origin)
+        canvas.commitTextEditing()
+        controller.document.undo()
+        XCTAssertTrue(controller.document.isEmpty)
+    }
+
+    func testDeletingReopenedTextCanBeUndone() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("remove me", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let editor = try reopenText(at: origin)
+        editor.insertText("", replacementRange: NSRange(location: 0, length: 9))
+        canvas.commitTextEditing()
+        XCTAssertTrue(controller.document.isEmpty)
+        controller.document.undo()
+        XCTAssertEqual(controller.document.annotations, original)
+    }
+
+    func testTextUndoAndRedoLeaveCommittedAnnotationsAlone() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("saved", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: 400, y: 400))
+        editor.insertText("typing", replacementRange: editor.selectedRange())
+        XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent("z", .command)))
+        XCTAssertEqual(editor.string, "")
+        XCTAssertEqual(controller.document.annotations, original)
+        XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent("z", [.command, .shift])))
+        XCTAssertEqual(editor.string, "typing")
+        XCTAssertEqual(controller.document.annotations, original)
+    }
+
+    private func hoverHandle(atImagePoint point: CGPoint) throws -> NSView {
+        let canvas = try canvas()
+        let viewPoint = canvas.geometry.viewPoint(fromImage: point)
+        canvas.mouseMoved(with: try mouseEvent(.mouseMoved, at: try windowPoint(fromCanvas: viewPoint)))
+        return try XCTUnwrap(canvas.subviews.first { $0.identifier?.rawValue == "annotationMoveHandle" })
+    }
+
+    func testHoverHandleMovesActiveTextWithoutClickingAwayEvenOnDoubleClick() throws {
+        try useLargeDocument()
+        let editor = try beginTextEdit("still typing", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        let handle = try hoverHandle(atImagePoint: CGPoint(x: 210, y: 210))
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let handlePoint = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+        XCTAssertTrue(content.hitTest(canvas.convert(handlePoint, to: content)) === handle,
+                      "the handle must receive the gesture above the live editor")
+        let start = try windowPoint(fromCanvas: handlePoint)
+        let finish = CGPoint(x: start.x + 70, y: start.y - 50)
+        handle.mouseDown(with: try mouseEvent(.leftMouseDown, at: start, clickCount: 2))
+        XCTAssertNil(editor.superview, "grabbing the handle commits typing directly")
+        handle.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: finish))
+        handle.mouseUp(with: try mouseEvent(.leftMouseUp, at: finish))
+        XCTAssertEqual(controller.document.annotations.count, 1)
+        guard case let .text(origin, string, _) = controller.document.annotations[0].kind else { return XCTFail("expected text") }
+        XCTAssertEqual(string, "still typing")
+        XCTAssertEqual(origin.x, 200 + 70 * canvas.geometry.imageScale, accuracy: 0.01)
+        XCTAssertEqual(origin.y, 200 + 50 * canvas.geometry.imageScale, accuracy: 0.01)
+        XCTAssertFalse(canvas.subviews.contains { $0 is NSTextView })
+        controller.document.undo()
+        guard case let .text(restored, _, _) = controller.document.annotations[0].kind else { return XCTFail("expected text") }
+        XCTAssertEqual(restored, CGPoint(x: 200, y: 200))
+    }
+
+    func testHandleStaysVisibleOnApproachAndHidesWhenPointerLeaves() throws {
+        try useLargeDocument()
+        try beginTextEdit("hover here", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        let handle = try hoverHandle(atImagePoint: CGPoint(x: 210, y: 210))
+        let point = CGPoint(x: handle.frame.midX, y: handle.frame.midY)
+        canvas.mouseMoved(with: try mouseEvent(.mouseMoved, at: try windowPoint(fromCanvas: point)))
+        XCTAssertTrue(handle.superview === canvas)
+        canvas.mouseExited(with: try XCTUnwrap(NSEvent.enterExitEvent(
+            with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil
+        )))
+        XCTAssertNil(handle.superview)
+        XCTAssertTrue(canvas.subviews.contains { $0 is NSTextView }, "hovering must not finish editing")
+    }
+
+    func testHandleClickWithoutDragNeverReopensTextAndAddsNoMoveUndoStep() throws {
+        try useLargeDocument()
+        try beginTextEdit("click handle", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let handle = try hoverHandle(atImagePoint: CGPoint(x: 210, y: 210))
+        let point = try windowPoint(fromCanvas: CGPoint(x: handle.frame.midX, y: handle.frame.midY))
+        for count in [1, 2, 3] {
+            handle.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, clickCount: count))
+            handle.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, clickCount: count))
+            XCTAssertFalse(canvas.subviews.contains { $0 is NSTextView })
+            XCTAssertEqual(controller.document.annotations, original)
+        }
+        controller.document.undo()
+        XCTAssertTrue(controller.document.isEmpty)
+    }
+
+    func testEveryShapeCanMoveUsingItsHoverHandleWithUndo() throws {
+        try useLargeDocument()
+        let canvas = try canvas()
+        let kinds: [Annotation.Kind] = [
+            .box(CGRect(x: 200, y: 200, width: 100, height: 80)),
+            .ellipse(CGRect(x: 200, y: 200, width: 100, height: 80)),
+            .line(from: CGPoint(x: 200, y: 200), to: CGPoint(x: 300, y: 280)),
+            .arrow(from: CGPoint(x: 200, y: 200), to: CGPoint(x: 300, y: 280))
+        ]
+        let dx = 50 * canvas.geometry.imageScale
+        let dy = 40 * canvas.geometry.imageScale
+        let expected: [Annotation.Kind] = [
+            .box(CGRect(x: 200 + dx, y: 200 + dy, width: 100, height: 80)),
+            .ellipse(CGRect(x: 200 + dx, y: 200 + dy, width: 100, height: 80)),
+            .line(from: CGPoint(x: 200 + dx, y: 200 + dy), to: CGPoint(x: 300 + dx, y: 280 + dy)),
+            .arrow(from: CGPoint(x: 200 + dx, y: 200 + dy), to: CGPoint(x: 300 + dx, y: 280 + dy))
+        ]
+        for (index, kind) in kinds.enumerated() {
+            controller.document.clear()
+            let original = Annotation(kind: kind, style: .default)
+            controller.document.append(original)
+            let handle = try hoverHandle(atImagePoint: CGPoint(x: 250, y: 240))
+            let start = try windowPoint(fromCanvas: CGPoint(x: handle.frame.midX, y: handle.frame.midY))
+            let end = CGPoint(x: start.x + 50, y: start.y - 40)
+            handle.mouseDown(with: try mouseEvent(.leftMouseDown, at: start))
+            handle.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: end))
+            handle.mouseUp(with: try mouseEvent(.leftMouseUp, at: end))
+            XCTAssertEqual(controller.document.annotations, [Annotation(id: original.id, kind: expected[index], style: original.style)])
+            controller.document.undo()
+            XCTAssertEqual(controller.document.annotations, [original])
+        }
+    }
+
+    func testMoveToolFinishesTypingAndRepeatedClicksDoNotReopenEditor() throws {
+        try useLargeDocument()
+        let editor = try beginTextEdit("move this", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let point = canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210))
+        let hitPoint = canvas.convert(point, to: content)
+        XCTAssertTrue(content.hitTest(hitPoint) === editor, "the editor owns drags while typing")
+
+        controller.document.tool = .move
+        XCTAssertEqual(committedTexts(), ["move this"])
+        XCTAssertTrue(canvas.subviews.isEmpty)
+        XCTAssertTrue(content.hitTest(hitPoint) === canvas, "Move must remove the editor that intercepts drags")
+        for _ in 0..<3 {
+            let windowPoint = try windowPoint(fromCanvas: point)
+            canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: windowPoint))
+            canvas.mouseUp(with: try mouseEvent(.leftMouseUp, at: windowPoint))
+            XCTAssertTrue(canvas.subviews.isEmpty, "single clicks in Move must never reenter editing")
+        }
+        try drag(from: try windowPoint(fromCanvas: point),
+                 to: try windowPoint(fromCanvas: CGPoint(x: point.x + 80, y: point.y + 60)))
+        guard case let .text(origin, _, _) = controller.document.annotations[0].kind else { return XCTFail("expected text") }
+        XCTAssertGreaterThan(origin.x, 200)
+        XCTAssertGreaterThan(origin.y, 200)
+    }
+
+    func testMoveToolAcceptsTheOutlinePaddingOutsideSmallText() throws {
+        try useLargeDocument()
+        controller.document.style.size = .small
+        try beginTextEdit("x", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        controller.document.tool = .move
+        // Six view points to the left is outside the old four-point target.
+        let anchor = canvas.geometry.viewPoint(fromImage: CGPoint(x: 200, y: 200))
+        let point = CGPoint(x: anchor.x - 6, y: anchor.y + 2)
+        try drag(from: try windowPoint(fromCanvas: point),
+                 to: try windowPoint(fromCanvas: CGPoint(x: point.x + 60, y: point.y + 30)))
+        XCTAssertEqual(controller.document.annotations.count, 1)
+        guard case let .text(origin, string, _) = controller.document.annotations[0].kind else { return XCTFail("expected text") }
+        XCTAssertEqual(string, "x")
+        XCTAssertEqual(origin.x, 200 + 60 * canvas.geometry.imageScale, accuracy: 0.01)
+        XCTAssertEqual(origin.y, 200 + 30 * canvas.geometry.imageScale, accuracy: 0.01)
+    }
+
+    func testMoveToolBlankDragDoesNothingAndShortcutsSelectIt() throws {
+        let canvas = try canvas()
+        for key in ["7", "v"] {
+            controller.document.tool = .arrow
+            canvas.keyDown(with: try keyEvent(key, []))
+            XCTAssertEqual(controller.document.tool, .move)
+        }
+        let crop = controller.document.cropRect
+        try drag(from: try windowPoint(fromCanvas: CGPoint(x: 200, y: 100)),
+                 to: try windowPoint(fromCanvas: CGPoint(x: 300, y: 180)))
+        XCTAssertTrue(controller.document.isEmpty)
+        XCTAssertEqual(controller.document.cropRect, crop)
+        XCTAssertFalse(controller.document.canUndo)
+        XCTAssertTrue(AnnotationCanvasView.cursor(for: .move) === NSCursor.openHand)
+    }
+
+    func testTextCanMoveAfterOtherAnnotationsWithoutChangingTheirOrder() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("first\nsecond", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let text = try XCTUnwrap(controller.document.annotations.first)
+        let shape = Annotation(kind: .box(CGRect(x: 500, y: 400, width: 100, height: 100)), style: .default)
+        controller.document.append(shape)
+        controller.document.tool = .arrow
+        let start = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210)))
+        let end = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 310, y: 290)))
+        canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: start))
+        canvas.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: end))
+        XCTAssertEqual(controller.document.annotations, [text, shape], "preview must not create undo steps")
+        canvas.mouseUp(with: try mouseEvent(.leftMouseUp, at: end))
+        let moved = try XCTUnwrap(controller.document.annotations.first)
+        XCTAssertEqual(moved.id, text.id)
+        XCTAssertEqual(moved.style, text.style)
+        XCTAssertEqual(controller.document.annotations, [moved, shape])
+        guard case let .text(destination, string, wrapWidth) = moved.kind else { return XCTFail("expected text") }
+        XCTAssertEqual(destination.x, 300, accuracy: 0.01)
+        XCTAssertEqual(destination.y, 280, accuracy: 0.01)
+        XCTAssertEqual(string, "first\nsecond")
+        XCTAssertNil(wrapWidth)
+        controller.document.undo()
+        XCTAssertEqual(controller.document.annotations, [text, shape])
+        controller.document.redo()
+        XCTAssertEqual(controller.document.annotations, [moved, shape])
+    }
+
+    func testMoveToolDragClampsTextToCrop() throws {
+        try useLargeDocument()
+        let document = controller.document
+        document.crop(to: CGRect(x: 100, y: 100, width: 600, height: 400))
+        try beginTextEdit("move this\nnote", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        controller.document.tool = .move
+        let start = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210)))
+        let end = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 1500, y: 1200)))
+        try drag(from: start, to: end)
+        XCTAssertTrue(canvas.subviews.isEmpty)
+        guard case let .text(origin, string, wrapWidth) = document.annotations[0].kind else { return XCTFail("expected text") }
+        let size = AnnotationRenderer.textSize(for: string, style: document.annotations[0].style, maxWidth: wrapWidth)
+        XCTAssertEqual(origin.x + size.width, document.cropRect.maxX, accuracy: 0.01)
+        XCTAssertEqual(origin.y + size.height, document.cropRect.maxY, accuracy: 0.01)
+    }
+
+    func testEscapeCancelsTextMoveWithoutClosingOrChangingHistory() throws {
+        try useLargeDocument()
+        try beginTextEdit("stay here", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        controller.document.tool = .move
+        let original = controller.document.annotations
+        let start = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210)))
+        let end = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 310, y: 310)))
+        canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: start))
+        canvas.mouseDragged(with: try mouseEvent(.leftMouseDragged, at: end))
+        canvas.keyDown(with: try keyEvent("\u{1b}", []))
+        canvas.mouseUp(with: try mouseEvent(.leftMouseUp, at: end))
+        XCTAssertEqual(controller.document.annotations, original)
+        XCTAssertTrue(delegate.messages.isEmpty)
+        controller.document.undo()
+        XCTAssertTrue(controller.document.isEmpty)
+    }
+
+    func testMovingWrappedTextPreservesWrapWidthAndMovesTopmostLabel() throws {
+        try useLargeDocument()
+        let canvas = try canvas()
+        let bottom = Annotation(kind: .text(origin: CGPoint(x: 200, y: 200), string: "underneath", wrapWidth: nil), style: .default)
+        let top = Annotation(kind: .text(origin: CGPoint(x: 200, y: 200), string: "a long note that wraps", wrapWidth: 150), style: .default)
+        controller.document.append(bottom)
+        controller.document.append(top)
+        controller.document.tool = .move
+        let start = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210)))
+        let end = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 310, y: 310)))
+        try drag(from: start, to: end)
+        XCTAssertEqual(controller.document.annotations[0], bottom)
+        XCTAssertEqual(controller.document.annotations[1].id, top.id)
+        guard case let .text(origin, string, width) = controller.document.annotations[1].kind else { return XCTFail("expected text") }
+        XCTAssertEqual(origin.x, 300, accuracy: 0.01)
+        XCTAssertEqual(origin.y, 300, accuracy: 0.01)
+        XCTAssertEqual(string, "a long note that wraps")
+        XCTAssertEqual(width, 150)
+    }
+
+    func testCommandDragOverTextStillCrops() throws {
+        try useLargeDocument()
+        try beginTextEdit("leave this alone", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let start = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 210, y: 210)))
+        let end = try windowPoint(fromCanvas: canvas.geometry.viewPoint(fromImage: CGPoint(x: 510, y: 510)))
+        try drag(from: start, to: end, modifiers: .command)
+        XCTAssertTrue(controller.document.isCropped)
+        XCTAssertEqual(controller.document.annotations, original)
+    }
+
+    func testDoubleClickReopensTextExceptInDedicatedMoveTool() throws {
+        try useLargeDocument()
+        let origin = CGPoint(x: 200, y: 200)
+        try beginTextEdit("edit me", atImagePoint: origin)
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        for tool in AnnotationTool.allCases where tool != .move {
+            controller.document.tool = tool
+            let point = canvas.geometry.viewPoint(fromImage: CGPoint(x: origin.x + 4, y: origin.y + 4))
+            canvas.mouseDown(with: try mouseEvent(.leftMouseDown, at: try windowPoint(fromCanvas: point), clickCount: 2))
+            let editor = try XCTUnwrap(canvas.subviews.compactMap { $0 as? NSTextView }.first)
+            XCTAssertEqual(editor.string, "edit me")
+            canvas.cancelTextEditing()
+            XCTAssertEqual(controller.document.annotations, original)
+        }
+    }
+
+    func testToolbarToolChangeCommitsBeforeDrawing() throws {
+        try useLargeDocument()
+        try beginTextEdit("keep this", atImagePoint: CGPoint(x: 200, y: 200))
+        controller.document.tool = .arrow
+        XCTAssertEqual(committedTexts(), ["keep this"])
+        XCTAssertTrue(try canvas().subviews.isEmpty)
+    }
+
+    func testCommandDeleteEditsTheLineWithoutClearingAnnotations() throws {
+        try useLargeDocument()
+        try beginTextEdit("saved", atImagePoint: CGPoint(x: 200, y: 200))
+        let canvas = try canvas()
+        canvas.commitTextEditing()
+        let original = controller.document.annotations
+        let editor = try beginTextEdit("first\nsecond", atImagePoint: CGPoint(x: 400, y: 400))
+        XCTAssertTrue(canvas.performKeyEquivalent(with: try keyEvent("\u{7f}", .command)))
+        XCTAssertEqual(editor.string, "first\n")
+        XCTAssertEqual(controller.document.annotations, original)
+    }
+
+    func testBlankLinesAndIndentationArePreservedAndCaretFits() throws {
+        try useLargeDocument()
+        let editor = try beginTextEdit("  first\n\n", atImagePoint: CGPoint(x: 200, y: 700))
+        let manager = try XCTUnwrap(editor.layoutManager)
+        XCTAssertLessThanOrEqual(manager.extraLineFragmentRect.maxY, editor.bounds.height)
+        try canvas().commitTextEditing()
+        XCTAssertEqual(committedTexts(), ["  first\n\n"])
     }
 
     /// Short text must not start reflowing just because wrapping now exists.

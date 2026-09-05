@@ -568,11 +568,11 @@ final class AnnotationModelTests: XCTestCase {
     }
 
     func testToolKeyEquivalentsMatchCaseIterableOrder() {
-        XCTAssertEqual(AnnotationTool.allCases, [.arrow, .box, .ellipse, .line, .text, .crop])
-        XCTAssertEqual(AnnotationTool.allCases.map(\.keyEquivalent), ["1", "2", "3", "4", "5", "6"])
+        XCTAssertEqual(AnnotationTool.allCases, [.arrow, .box, .ellipse, .line, .text, .crop, .move])
+        XCTAssertEqual(AnnotationTool.allCases.map(\.keyEquivalent), ["1", "2", "3", "4", "5", "6", "7"])
         XCTAssertEqual(Set(AnnotationTool.allCases.map(\.keyEquivalent)).count, AnnotationTool.allCases.count)
-        XCTAssertEqual(AnnotationTool.allCases.map(\.id), ["arrow", "box", "ellipse", "line", "text", "crop"])
-        XCTAssertEqual(AnnotationTool.allCases.map(\.title), ["Arrow", "Box", "Ellipse", "Line", "Text", "Crop"])
+        XCTAssertEqual(AnnotationTool.allCases.map(\.id), ["arrow", "box", "ellipse", "line", "text", "crop", "move"])
+        XCTAssertEqual(AnnotationTool.allCases.map(\.title), ["Arrow", "Box", "Ellipse", "Line", "Text", "Crop", "Move"])
 
         for (index, tool) in AnnotationTool.allCases.enumerated() {
             XCTAssertEqual(tool.keyEquivalent, String(index + 1))
