@@ -33,6 +33,16 @@ enum AnnotationRenderer {
         }
 
         let style = annotation.style
+        // The annotation goes into its own transparency layer, and the layer is then blended
+        // into the image one time. Without the layer, two parts of one annotation that overlap
+        // (the cap of an arrow shaft under its head) invert the pixel two times and cancel out.
+        if style.color.isInverse {
+            context.cgContext.setBlendMode(.difference)
+            context.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+        }
+        defer {
+            if style.color.isInverse { context.cgContext.endTransparencyLayer() }
+        }
         switch annotation.kind {
         case let .line(from, to):
             stroke(linePath(from: scaled(from, scale), to: scaled(to, scale)), style: style, scale: scale)

@@ -592,17 +592,23 @@ final class AnnotationModelTests: XCTestCase {
     func testColoursAreOpaqueSRGBAndDistinct() throws {
         XCTAssertEqual(
             AnnotationColor.allCases.map(\.id),
-            ["red", "orange", "yellow", "green", "blue", "magenta", "white", "black"]
+            ["red", "orange", "yellow", "green", "blue", "magenta", "white", "black", "invert"]
         )
 
+        // Inverse has no color of its own. Its ink is white, which the renderer blends with the
+        // difference mode. So only the fixed colors must be distinct.
+        let fixedColors = AnnotationColor.allCases.filter { !$0.isInverse }
+        XCTAssertEqual(AnnotationColor.allCases.filter(\.isInverse), [.invert])
+        XCTAssertEqual(AnnotationColor.invert.nsColor, AnnotationColor.white.nsColor)
+
         var components: Set<[CGFloat]> = []
-        for color in AnnotationColor.allCases {
+        for color in fixedColors {
             let nsColor = color.nsColor
             XCTAssertEqual(nsColor.colorSpace.cgColorSpace?.name, CGColorSpace.sRGB, "\(color.rawValue)")
             XCTAssertEqual(nsColor.alphaComponent, 1.0, accuracy: 1e-9, "\(color.rawValue)")
             components.insert([nsColor.redComponent, nsColor.greenComponent, nsColor.blueComponent])
         }
-        XCTAssertEqual(components.count, AnnotationColor.allCases.count)
+        XCTAssertEqual(components.count, fixedColors.count)
 
         let white = AnnotationColor.white.nsColor
         XCTAssertEqual(white.redComponent, 1.0, accuracy: 1e-9)

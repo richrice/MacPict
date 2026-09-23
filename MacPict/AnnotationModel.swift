@@ -48,9 +48,13 @@ enum AnnotationTool: String, CaseIterable, Identifiable, Sendable {
 }
 
 enum AnnotationColor: String, CaseIterable, Identifiable, Sendable {
-    case red, orange, yellow, green, blue, magenta, white, black
+    case red, orange, yellow, green, blue, magenta, white, black, invert
 
     var id: String { rawValue }
+
+    /// Inverts the pixels under the annotation. `nsColor` is white for this case, because
+    /// white in the difference blend mode gives `1 - background`.
+    var isInverse: Bool { self == .invert }
 
     // Explicit sRGB rather than the dynamic catalog colours: these are baked into an
     // exported PNG and must not shift with appearance or with the display's profile.
@@ -62,7 +66,7 @@ enum AnnotationColor: String, CaseIterable, Identifiable, Sendable {
         case .green: NSColor(srgbRed: 0.20, green: 0.78, blue: 0.35, alpha: 1.0)
         case .blue: NSColor(srgbRed: 0.0, green: 0.48, blue: 1.0, alpha: 1.0)
         case .magenta: NSColor(srgbRed: 1.0, green: 0.18, blue: 0.80, alpha: 1.0)
-        case .white: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
+        case .white, .invert: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
         case .black: NSColor(srgbRed: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
         }
     }

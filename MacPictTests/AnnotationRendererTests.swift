@@ -269,6 +269,82 @@ final class AnnotationRendererTests: XCTestCase {
         )
     }
 
+    // MARK: - Inverse color
+
+    private static let inverse = AnnotationStyle(color: .invert, size: .medium)
+
+    /// Left half black, right half white, so one annotation crosses both.
+    private func halfBlackImage(width: Int, height: Int) throws -> CGImage {
+        try XCTUnwrap(RenderTestSupport.rawImage(width: width, height: height) { x, _ in
+            x < width / 2 ? (0, 0, 0) : (255, 255, 255)
+        })
+    }
+
+    func testInverseDrawsTheOppositeOfEachBackgroundPixel() throws {
+        let image = try halfBlackImage(width: 200, height: 100)
+        let box = annotation(.box(CGRect(x: 20, y: 20, width: 160, height: 60)), style: Self.inverse)
+
+        let flattened = try SnapshotExporter.flatten(image: image, annotations: [box])
+        let buffer = try XCTUnwrap(RenderPixelBuffer(image: flattened))
+
+        // The top edge of the box, on each half of the image.
+        let onBlack = buffer.pixel(x: 50, y: 20)
+        let onWhite = buffer.pixel(x: 150, y: 20)
+        XCTAssertEqual([onBlack.r, onBlack.g, onBlack.b], [255, 255, 255])
+        XCTAssertEqual([onWhite.r, onWhite.g, onWhite.b], [0, 0, 0])
+        // Off the box, the image does not change.
+        XCTAssertEqual(buffer.pixel(x: 50, y: 50).r, 0)
+        XCTAssertEqual(buffer.pixel(x: 150, y: 50).r, 255)
+    }
+
+    /// The round cap of the shaft sits under the base of the head. Without a transparency
+    /// layer, the overlap inverts two times and shows the background again.
+    func testInverseArrowDoesNotCancelWhereTheShaftMeetsTheHead() throws {
+        let arrow = annotation(.arrow(from: CGPoint(x: 20, y: 50), to: CGPoint(x: 180, y: 50)), style: Self.inverse)
+        let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 200, height: 100) { context in
+            AnnotationRenderer.draw([arrow], in: context, scale: 1.0)
+        })
+
+        let head = try XCTUnwrap(AnnotationRenderer.arrowHead(
+            from: CGPoint(x: 20, y: 50),
+            to: CGPoint(x: 180, y: 50),
+            lineWidth: Self.inverse.lineWidth
+        ))
+        let baseX = Int((head.left.x + head.right.x) / 2)
+        for x in (baseX - 2)...(baseX + 2) {
+            let sample = buffer.pixel(x: x, y: 50)
+            XCTAssertEqual([sample.r, sample.g, sample.b], [0, 0, 0], "x = \(x)")
+        }
+    }
+
+    func testInverseTextInvertsTheBackground() throws {
+        let text = annotation(.text(origin: CGPoint(x: 10, y: 10), string: "Hi", wrapWidth: nil), style: Self.inverse)
+        let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 200, height: 100) { context in
+            AnnotationRenderer.draw([text], in: context, scale: 1.0)
+        })
+
+        let ink = try XCTUnwrap(buffer.inkBounds(), "inverse text on white must show as dark glyphs")
+        var darkest: UInt8 = 255
+        for y in Int(ink.minY)..<Int(ink.maxY) {
+            for x in Int(ink.minX)..<Int(ink.maxX) {
+                darkest = min(darkest, buffer.pixel(x: x, y: y).r)
+            }
+        }
+        XCTAssertEqual(darkest, 0)
+    }
+
+    /// The blend mode must not leak into the next annotation.
+    func testInverseDoesNotChangeTheAnnotationDrawnAfterIt() throws {
+        let inverseBox = annotation(.box(CGRect(x: 10, y: 10, width: 40, height: 40)), style: Self.inverse)
+        let redBox = annotation(.box(CGRect(x: 110, y: 10, width: 40, height: 40)))
+        let buffer = try XCTUnwrap(RenderTestSupport.flippedRender(width: 200, height: 100) { context in
+            AnnotationRenderer.draw([inverseBox, redBox], in: context, scale: 1.0)
+        })
+
+        let sample = buffer.pixel(x: 130, y: 10)
+        XCTAssertEqual([sample.r, sample.g, sample.b], [255, 51, 51])
+    }
+
     func testZeroLengthArrowHasNoHeadAndNoNaN() throws {
         XCTAssertNil(AnnotationRenderer.arrowHead(from: CGPoint(x: 40, y: 40), to: CGPoint(x: 40, y: 40), lineWidth: 8))
 

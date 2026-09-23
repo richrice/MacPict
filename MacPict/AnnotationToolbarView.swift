@@ -59,8 +59,7 @@ struct AnnotationToolbarView: View {
                 Button {
                     document.style.color = color
                 } label: {
-                    Circle()
-                        .fill(Color(nsColor: color.nsColor))
+                    swatch(for: color)
                         .frame(width: 14, height: 14)
                         .overlay(Circle().strokeBorder(.primary.opacity(0.3), lineWidth: 0.5))
                         .padding(3)
@@ -77,6 +76,17 @@ struct AnnotationToolbarView: View {
                 .accessibilityLabel(Text(color.rawValue.capitalized))
                 .accessibilityAddTraits(document.style.color == color ? .isSelected : [])
             }
+        }
+    }
+
+    /// The inverse swatch is half black and half white, because it has no color of its own.
+    @ViewBuilder
+    private func swatch(for color: AnnotationColor) -> some View {
+        if color.isInverse {
+            Circle().fill(.white)
+                .overlay(Circle().trim(from: 0.25, to: 0.75).fill(.black))
+        } else {
+            Circle().fill(Color(nsColor: color.nsColor))
         }
     }
 

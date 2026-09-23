@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 import Foundation
 import SwiftUI
 import XCTest
@@ -1023,6 +1024,23 @@ final class AnnotationWindowControllerTests: XCTestCase {
         XCTAssertEqual(typedInk.minX, atOnceInk.minX)
         XCTAssertEqual(typedInk.maxX, atOnceInk.maxX)
         XCTAssertEqual(typedInk.maxY - typedInk.minY, atOnceInk.maxY - atOnceInk.minY)
+    }
+
+    /// An `NSTextView` cannot draw in a blend mode, so the editor layer inverts instead.
+    func testTheInverseTextEditorBlendsWithTheDifferenceFilter() throws {
+        controller.document.style = AnnotationStyle(color: .invert, size: .medium)
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: 20, y: 20))
+
+        let filter = try XCTUnwrap(editor.layer?.compositingFilter as? CIFilter)
+        XCTAssertEqual(filter.name, "CIDifferenceBlendMode")
+        XCTAssertEqual(editor.textColor, AnnotationColor.white.nsColor)
+    }
+
+    func testAColoredTextEditorHasNoCompositingFilter() throws {
+        controller.document.style = AnnotationStyle(color: .red, size: .medium)
+        let editor = try beginTextEdit("", atImagePoint: CGPoint(x: 20, y: 20))
+
+        XCTAssertNil(editor.layer?.compositingFilter)
     }
 
     /// An explicit break is not a wrap: the unbounded container must not swallow ⇧↩.

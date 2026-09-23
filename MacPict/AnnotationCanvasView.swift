@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreImage
 
 /// Each text session owns its undo history; typing must never undo a crop or a shape.
 @MainActor
@@ -832,6 +833,12 @@ final class AnnotationCanvasView: NSView {
         textView.font = AnnotationRenderer.font(for: style, scale: 1 / geometry.imageScale)
         textView.textColor = style.color.nsColor
         textView.insertionPointColor = style.color.nsColor
+        // An `NSTextView` cannot draw in a blend mode, so the layer of the editor applies the
+        // difference blend instead. The live text then shows inverted, the same as the render.
+        if style.color.isInverse {
+            textView.wantsLayer = true
+            textView.layer?.compositingFilter = CIFilter(name: "CIDifferenceBlendMode")
+        }
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.isRichText = false
