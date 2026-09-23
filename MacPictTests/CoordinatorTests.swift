@@ -158,6 +158,7 @@ final class CoordinatorTests: XCTestCase {
     private var defaults: UserDefaults!
     private var settings: SettingsStore!
     private var hotkeyManager: GlobalHotkeyManager!
+    private var loginItem: FakeLoginItemService!
     /// Managers that hold a shortcut so the coordinator's own registration of it must fail.
     private var blockers: [GlobalHotkeyManager] = []
     private var coordinator: AppCoordinator!
@@ -178,6 +179,7 @@ final class CoordinatorTests: XCTestCase {
         defaults.removePersistentDomain(forName: Self.defaultsSuite)
         settings = SettingsStore(defaults: defaults)
         hotkeyManager = GlobalHotkeyManager()
+        loginItem = FakeLoginItemService()
         coordinator = makeCoordinator()
     }
 
@@ -189,6 +191,7 @@ final class CoordinatorTests: XCTestCase {
         }
         blockers.removeAll()
         hotkeyManager = nil
+        loginItem = nil
         settings = nil
         defaults?.removePersistentDomain(forName: Self.defaultsSuite)
         defaults = nil
@@ -210,7 +213,8 @@ final class CoordinatorTests: XCTestCase {
             delivery: delivery,
             saveLocation: saveLocation,
             hotkey: hotkeyManager,
-            settings: settings
+            settings: settings,
+            launchAtLogin: LaunchAtLogin(service: loginItem, defaults: defaults)
         )
     }
 
@@ -700,9 +704,9 @@ final class CoordinatorTests: XCTestCase {
         let row = try XCTUnwrap(coordinator.hotkeyItem)
         XCTAssertFalse(row.isHidden)
         // Both halves matter: which shortcut failed, and that the previous one carried on.
-        XCTAssertEqual(row.title, "Shortcut conflict: F13 is already in use — still using ⌃⌥ C")
+        XCTAssertEqual(row.title, "Shortcut conflict: F13 is already in use — still using ⇧⌘ 2")
 
-        coordinator.updateHotkeyItem(for: .registered("⌃⌥ C"))
+        coordinator.updateHotkeyItem(for: .registered("⇧⌘ 2"))
 
         XCTAssertTrue(row.isHidden)
     }
@@ -729,7 +733,7 @@ final class CoordinatorTests: XCTestCase {
         coordinator.updateHotkeyItem(for: .failed("Carbon error -50"))
         XCTAssertEqual(
             coordinator.hotkeyItem?.title,
-            "Registration failed: Carbon error -50 — still using ⌃⌥ C"
+            "Registration failed: Carbon error -50 — still using ⇧⌘ 2"
         )
         XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
 
@@ -740,6 +744,13 @@ final class CoordinatorTests: XCTestCase {
 
         XCTAssertEqual(capture.callCount, 1)
         XCTAssertNotNil(coordinator.activeWindowController)
+    }
+
+    func testStartTurnsOnLaunchAtLogin() {
+        coordinator.start()
+
+        XCTAssertEqual(loginItem.registerCount, 1)
+        XCTAssertEqual(loginItem.status, .enabled)
     }
 
     func testTheMenuOffersSettingsAboveTheQuitSeparator() throws {
@@ -777,10 +788,10 @@ final class CoordinatorTests: XCTestCase {
         // The user still learns their pick did not take, and that the old one carried on.
         XCTAssertEqual(
             coordinator.hotkeyItem?.title,
-            "Shortcut conflict: F18 is already in use — still using ⌃⌥ C"
+            "Shortcut conflict: F18 is already in use — still using ⇧⌘ 2"
         )
         XCTAssertEqual(coordinator.hotkeyItem?.isHidden, false)
-        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (⌃⌥ C)")
+        XCTAssertEqual(coordinator.captureItem?.title, "Capture Display Under Pointer (⇧⌘ 2)")
     }
 
     /// The window this closes: while the write-back was deferred by a turn of the main actor,

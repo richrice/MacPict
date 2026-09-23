@@ -3,21 +3,20 @@ import XCTest
 @testable import MacPict
 
 final class HotkeyShortcutTests: XCTestCase {
-    func testCaptureDefaultIsControlOptionC() {
+    func testCaptureDefaultIsShiftCommand2() {
         let shortcut = HotkeyShortcut.captureDefault
-        XCTAssertEqual(shortcut.keyCode, UInt32(kVK_ANSI_C))
-        XCTAssertEqual(shortcut.carbonModifiers, UInt32(controlKey | optionKey))
-        XCTAssertEqual(shortcut.displayString, "⌃⌥ C")
+        XCTAssertEqual(shortcut.keyCode, UInt32(kVK_ANSI_2))
+        XCTAssertEqual(shortcut.carbonModifiers, UInt32(cmdKey | shiftKey))
+        XCTAssertEqual(shortcut.displayString, "⇧⌘ 2")
     }
 
-    func testCaptureDefaultCarriesNoModifierBeyondControlOption() {
+    /// A terminal sends a ⌃ chord to the program it runs, so ⌃⌥C reaches that program as ⌃C
+    /// when MacPict is not running. The terminal keeps a ⌘ chord for itself.
+    func testCaptureDefaultIncludesCommandAndNotControl() {
         let modifiers = HotkeyShortcut.captureDefault.carbonModifiers
-        XCTAssertEqual(modifiers & UInt32(controlKey), UInt32(controlKey))
-        XCTAssertEqual(modifiers & UInt32(optionKey), UInt32(optionKey))
-        XCTAssertEqual(modifiers & UInt32(cmdKey), 0, "command must not be part of the capture shortcut")
-        XCTAssertEqual(modifiers & UInt32(shiftKey), 0, "shift must not be part of the capture shortcut")
+        XCTAssertEqual(modifiers & UInt32(cmdKey), UInt32(cmdKey), "command keeps the chord out of the terminal")
+        XCTAssertEqual(modifiers & UInt32(controlKey), 0, "control must not be part of the capture shortcut")
         XCTAssertEqual(modifiers & UInt32(alphaLock), 0)
-        XCTAssertEqual(modifiers & ~UInt32(controlKey | optionKey), 0)
     }
 
     func testPresetGroupsContainTheDefault() {

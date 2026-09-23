@@ -2,7 +2,7 @@
 
 MacPict is a native macOS menu-bar utility that collapses the "screenshot → annotate → hand it to an AI agent" loop into a few keystrokes.
 
-Press **⌃⌥ C**. MacPict captures the display the mouse pointer is currently on and opens the snapshot in a floating window. Annotate it with lines, boxes, circles, arrows, and text, crop it down to just the part that matters, then send it straight to a CLI agent (Claude Code, Codex CLI) or a desktop app (Claude, Codex) — no file cluttering the Desktop, no image editor, no export step.
+Press **⇧⌘ 2**. MacPict captures the display the mouse pointer is currently on and opens the snapshot in a floating window. Annotate it with lines, boxes, circles, arrows, and text, crop it down to just the part that matters, then send it straight to a CLI agent (Claude Code, Codex CLI) or a desktop app (Claude, Codex) — no file cluttering the Desktop, no image editor, no export step.
 
 The capture shortcut is configurable — see [Choosing your shortcut](#choosing-your-shortcut).
 
@@ -21,7 +21,9 @@ MacPict uses Swift, SwiftUI, AppKit, ScreenCaptureKit, CoreGraphics, and Carbon.
 ./scripts/install.sh
 ```
 
-Builds Release, quits any running copy, and installs to `/Applications/MacPict.app`. Then launch it from Applications or Spotlight.
+Builds Release, quits any running copy, installs to `/Applications/MacPict.app`, and launches it.
+
+On its first launch, MacPict adds itself to your login items so it starts at login. To turn this off, clear **Launch at login** in **Settings…**. MacPict does not turn it on again after you turn it off.
 
 Reinstalling keeps the Screen Recording grant you have already given — see [Screen Recording permission](#screen-recording-permission). Only a first install has to ask.
 
@@ -69,7 +71,7 @@ Reinstalling over an existing copy does not revoke the grant. macOS records it a
 
 | Key | Action |
 |---|---|
-| `⌃⌥ C` | capture the display under the pointer (configurable) |
+| `⇧⌘ 2` | capture the display under the pointer (configurable) |
 | `1`…`5` | arrow / box / ellipse / line / text tool |
 | `6` or `C` | crop tool |
 | `7` or `V` | Move tool — drag any outlined annotation |
@@ -126,12 +128,12 @@ Annotations cannot leave the visible image. Drag a shape past the edge and it st
 
 Open **Settings…** from the menu-bar menu (or press `⌘,` while a MacPict window is focused) and pick from the preset list. The change takes effect immediately — no relaunch.
 
-The default is `⌃⌥ C`: two adjacent left-hand modifiers plus a letter under the index finger, so it is comfortable one-handed, and `C` is mnemonic for Capture. The presets are grouped as **Letters**, **Space**, **Function keys** (bare `F13`–`F19`, the easiest of all to hit if your keyboard has them), and **Screenshot style** for anyone who prefers something in the `⌘⇧`/`⌃⌥⌘` family.
+The default is `⇧⌘ 2`. It includes `⌘` because a terminal keeps `⌘` chords for itself. If MacPict is not running, the terminal only beeps. A `⌃` chord such as `⌃⌥ C` goes to the program in the terminal as `⌃C` and stops it, for example a CLI agent. The presets are grouped as **Letters**, **Space**, **Function keys** (bare `F13`–`F19`, the easiest of all to hit if your keyboard has them), and **Screenshot style** for anyone who prefers something in the `⌘⇧`/`⌃⌥⌘` family.
 
 Two things to know when picking one:
 
 - **If another app already owns the combination**, the settings window says so and MacPict keeps using the shortcut that was working. Your selection is rolled back to the live one, so you are never left without a capture key and a dead choice is never carried into the next launch.
-- **A combination reserved by macOS itself** can register successfully and then simply never fire — Carbon reports no error for these. If a shortcut looks registered but does nothing, that is almost certainly why. Pick another. `⇧⌘2` is the most likely candidate, sitting right beside the system's `⇧⌘3`/`⇧⌘4`/`⇧⌘5`.
+- **A combination reserved by macOS itself** can register successfully and then simply never fire — Carbon reports no error for these. If a shortcut looks registered but does nothing, that is almost certainly why. Pick another.
 
 The menu-bar **Capture Display Under Pointer** item always works as a trigger regardless of shortcut state, which is what makes a bad choice recoverable.
 

@@ -4,10 +4,12 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var hotkey: GlobalHotkeyManager
+    @ObservedObject var launchAtLogin: LaunchAtLogin
 
-    init(settings: SettingsStore, hotkey: GlobalHotkeyManager) {
+    init(settings: SettingsStore, hotkey: GlobalHotkeyManager, launchAtLogin: LaunchAtLogin) {
         self.settings = settings
         self.hotkey = hotkey
+        self.launchAtLogin = launchAtLogin
     }
 
     var body: some View {
@@ -38,6 +40,29 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Startup") {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { launchAtLogin.isEnabled },
+                    set: { launchAtLogin.setEnabled($0) }
+                ))
+                if launchAtLogin.status == .requiresApproval {
+                    HStack {
+                        Text("Allow MacPict in Login Items to start it at login.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("Open Login Items") {
+                            launchAtLogin.openSystemSettings()
+                        }
+                    }
+                }
+                if let errorText = launchAtLogin.errorText {
+                    Text(errorText)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Section("SSH delivery") {
                 TextField("SSH target", text: $settings.sshTarget, prompt: Text("user@host or SSH alias"))
                     .textFieldStyle(.roundedBorder)
@@ -47,7 +72,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 340)
+        .frame(width: 420, height: 440)
+        .onAppear { launchAtLogin.refresh() }
     }
 
     private var statusSymbol: String {
@@ -82,8 +108,10 @@ struct SettingsView: View {
 final class SettingsWindowController {
     private let window: NSWindow
 
-    init(settings: SettingsStore, hotkey: GlobalHotkeyManager) {
-        let hostingController = NSHostingController(rootView: SettingsView(settings: settings, hotkey: hotkey))
+    init(settings: SettingsStore, hotkey: GlobalHotkeyManager, launchAtLogin: LaunchAtLogin) {
+        let hostingController = NSHostingController(
+            rootView: SettingsView(settings: settings, hotkey: hotkey, launchAtLogin: launchAtLogin)
+        )
         window = NSWindow(contentViewController: hostingController)
         window.title = "MacPict Settings"
         window.styleMask = [.titled, .closable]

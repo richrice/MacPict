@@ -10,8 +10,10 @@
 		0322DAF46DFF29DF1C03137C /* ScreenCaptureKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */; };
 		14561E9EA0B61F063470FA2F /* CoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A2C5C0FC6E652C5B17CEAD /* CoordinatorTests.swift */; };
 		22A0A065B8416326155C0946 /* AnnotationWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDEA1BCFCEC0A2835ACBD345 /* AnnotationWindowController.swift */; };
+		26EE85E08A1DFD3235A57743 /* LaunchAtLoginTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0310745603FD626376FD872A /* LaunchAtLoginTests.swift */; };
 		299C0FFDADE5E9232898C7A3 /* AnnotationWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFE39A212AC54D526CAFE182 /* AnnotationWindowControllerTests.swift */; };
 		2D1F83B0CF2EA94496BD3BD9 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */; };
+		3DAAF0A8A41EF91FD9D313C4 /* LaunchAtLogin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53E921A2328DA91AB62921BC /* LaunchAtLogin.swift */; };
 		3F06967B7C83F76146BBA513 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B6FABAA92418468FA7D7CE8 /* SettingsView.swift */; };
 		5C194D40360BF8435F8E0B1B /* DeliveryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 248925E80546E067638998E0 /* DeliveryService.swift */; };
 		5D3F15D6777C7EE87666259D /* SnapshotExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 839DFC20B760A7EC26D2470C /* SnapshotExporter.swift */; };
@@ -41,6 +43,7 @@
 		F5C84A5A875EC8CDE0F17DE3 /* AnnotationCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED9D39A193A6173D23A13B57 /* AnnotationCanvasView.swift */; };
 		F674377E6B548D88A53E626D /* DisplayLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A5BADAC97A498E05C83E18 /* DisplayLocator.swift */; };
 		FD00476D962FC5CF78C61E43 /* ScreenCapturePermission.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB283E0790CA64CD57671894 /* ScreenCapturePermission.swift */; };
+		FEB896D09F450F7624B81B29 /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B2B5FD9CA863C8DD2ED429BF /* ServiceManagement.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +57,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0310745603FD626376FD872A /* LaunchAtLoginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginTests.swift; sourceTree = "<group>"; };
 		0CB4952A4060F8D39BA52119 /* DeliveryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryServiceTests.swift; sourceTree = "<group>"; };
 		185A207AEC3DAF7949B75E82 /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
 		2352E804FBDEE6E3186E42E1 /* ScreenCaptureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureServiceTests.swift; sourceTree = "<group>"; };
@@ -62,6 +66,7 @@
 		255F85E75EEFB3D2BBD1097F /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 		32E7E5483DACE7BADA75E643 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		3958934DD2B68F02576437F0 /* SnapshotExporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotExporterTests.swift; sourceTree = "<group>"; };
+		53E921A2328DA91AB62921BC /* LaunchAtLogin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLogin.swift; sourceTree = "<group>"; };
 		54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ScreenCaptureKit.framework; path = System/Library/Frameworks/ScreenCaptureKit.framework; sourceTree = SDKROOT; };
 		6D736FA2317E40489A522EF3 /* CanvasGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGeometry.swift; sourceTree = "<group>"; };
@@ -75,6 +80,7 @@
 		9DB04A46399CEDC07104FDD9 /* DisplayLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayLocatorTests.swift; sourceTree = "<group>"; };
 		A0BB6D3BE8F3038142FAB1E6 /* MacPictApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPictApp.swift; sourceTree = "<group>"; };
 		A984EC07CCF06ACC6AEA4383 /* AnnotationRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationRenderer.swift; sourceTree = "<group>"; };
+		B2B5FD9CA863C8DD2ED429BF /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
 		BBF645E8F3B0F4F908443FE4 /* AnnotationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationModel.swift; sourceTree = "<group>"; };
 		BFE39A212AC54D526CAFE182 /* AnnotationWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnnotationWindowControllerTests.swift; sourceTree = "<group>"; };
 		C0D575C03A064EA278F8FBD9 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
@@ -102,6 +108,7 @@
 				CE28C24B9EC1047EA85A29A9 /* Carbon.framework in Frameworks */,
 				2D1F83B0CF2EA94496BD3BD9 /* CoreGraphics.framework in Frameworks */,
 				0322DAF46DFF29DF1C03137C /* ScreenCaptureKit.framework in Frameworks */,
+				FEB896D09F450F7624B81B29 /* ServiceManagement.framework in Frameworks */,
 				F0314C287FFA3D0D9987D831 /* UniformTypeIdentifiers.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -125,6 +132,7 @@
 				185A207AEC3DAF7949B75E82 /* Carbon.framework */,
 				54C34EE5552DC3FD3C8547D6 /* CoreGraphics.framework */,
 				6C7A1A27BA0A9F12D6FDC28B /* ScreenCaptureKit.framework */,
+				B2B5FD9CA863C8DD2ED429BF /* ServiceManagement.framework */,
 				775D528949D6878A0A66C355 /* UniformTypeIdentifiers.framework */,
 			);
 			name = Frameworks;
@@ -152,6 +160,7 @@
 				0CB4952A4060F8D39BA52119 /* DeliveryServiceTests.swift */,
 				9DB04A46399CEDC07104FDD9 /* DisplayLocatorTests.swift */,
 				FB013D96BFB7181D271D549C /* HotkeyShortcutTests.swift */,
+				0310745603FD626376FD872A /* LaunchAtLoginTests.swift */,
 				2352E804FBDEE6E3186E42E1 /* ScreenCaptureServiceTests.swift */,
 				DB6FEF48E15BECC3E9D64E43 /* SettingsStoreTests.swift */,
 				3958934DD2B68F02576437F0 /* SnapshotExporterTests.swift */,
@@ -173,6 +182,7 @@
 				248925E80546E067638998E0 /* DeliveryService.swift */,
 				C1A5BADAC97A498E05C83E18 /* DisplayLocator.swift */,
 				F0349F051EA365A478DD504B /* GlobalHotkeyManager.swift */,
+				53E921A2328DA91AB62921BC /* LaunchAtLogin.swift */,
 				EE94560A2CB1B4B645D7B5E3 /* MacPict.entitlements */,
 				A0BB6D3BE8F3038142FAB1E6 /* MacPictApp.swift */,
 				CB283E0790CA64CD57671894 /* ScreenCapturePermission.swift */,
@@ -276,6 +286,7 @@
 				C6FBB11BAC6DEA42FC48BCA1 /* DeliveryServiceTests.swift in Sources */,
 				9328E4218E6E8B4ECBAD4C0A /* DisplayLocatorTests.swift in Sources */,
 				D442135C2E991768A8120CB2 /* HotkeyShortcutTests.swift in Sources */,
+				26EE85E08A1DFD3235A57743 /* LaunchAtLoginTests.swift in Sources */,
 				72C8BBC5BC4E0E5D6D4D4303 /* ScreenCaptureServiceTests.swift in Sources */,
 				8A0CE8063A8AF849D2D52131 /* SettingsStoreTests.swift in Sources */,
 				F1521E9ED7B44EA315386637 /* SnapshotExporterTests.swift in Sources */,
@@ -297,6 +308,7 @@
 				5C194D40360BF8435F8E0B1B /* DeliveryService.swift in Sources */,
 				F674377E6B548D88A53E626D /* DisplayLocator.swift in Sources */,
 				7F7322E215B9B4D719E202FE /* GlobalHotkeyManager.swift in Sources */,
+				3DAAF0A8A41EF91FD9D313C4 /* LaunchAtLogin.swift in Sources */,
 				71D1AACF73425996F33E5B9A /* MacPictApp.swift in Sources */,
 				FD00476D962FC5CF78C61E43 /* ScreenCapturePermission.swift in Sources */,
 				B0524E8B22FA30512DBE8290 /* ScreenCaptureService.swift in Sources */,

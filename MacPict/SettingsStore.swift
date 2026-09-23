@@ -16,12 +16,13 @@ struct HotkeyShortcut: Codable, Hashable, Identifiable, Sendable {
 
     var id: String { "\(keyCode)-\(carbonModifiers)" }
 
-    // Two adjacent left-hand modifiers plus a letter that sits under the index finger,
-    // so the capture chord is comfortably one-handed; C is mnemonic for Capture.
+    // The chord includes ⌘ because a terminal keeps ⌘ chords for itself. When MacPict is not
+    // running, ⇧⌘2 only makes the terminal beep. A ⌃ chord such as ⌃⌥C reaches the program
+    // in the terminal as ⌃C and stops it.
     static let captureDefault = HotkeyShortcut(
-        keyCode: UInt32(kVK_ANSI_C),
-        carbonModifiers: UInt32(controlKey | optionKey),
-        displayString: "⌃⌥ C"
+        keyCode: UInt32(kVK_ANSI_2),
+        carbonModifiers: UInt32(cmdKey | shiftKey),
+        displayString: "⇧⌘ 2"
     )
 
     // A curated list, not a shortcut recorder: every entry is known to be typeable with one
@@ -31,7 +32,7 @@ struct HotkeyShortcut: Codable, Hashable, Identifiable, Sendable {
     // user runs both apps, so offering it here would hand them a guaranteed conflict.
     static let presetGroups: [HotkeyPresetGroup] = [
         HotkeyPresetGroup(name: "Letters", shortcuts: [
-            .captureDefault,
+            HotkeyShortcut(keyCode: UInt32(kVK_ANSI_C), carbonModifiers: UInt32(controlKey | optionKey), displayString: "⌃⌥ C"),
             HotkeyShortcut(keyCode: UInt32(kVK_ANSI_C), carbonModifiers: UInt32(optionKey), displayString: "⌥ C"),
             HotkeyShortcut(keyCode: UInt32(kVK_ANSI_S), carbonModifiers: UInt32(controlKey | optionKey), displayString: "⌃⌥ S"),
             HotkeyShortcut(keyCode: UInt32(kVK_ANSI_S), carbonModifiers: UInt32(optionKey), displayString: "⌥ S"),
@@ -55,8 +56,8 @@ struct HotkeyShortcut: Codable, Hashable, Identifiable, Sendable {
             HotkeyShortcut(keyCode: UInt32(kVK_F19), carbonModifiers: 0, displayString: "F19")
         ]),
         HotkeyPresetGroup(name: "Screenshot style", shortcuts: [
-            HotkeyShortcut(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: UInt32(controlKey | optionKey | cmdKey), displayString: "⌃⌥⌘ 4"),
-            HotkeyShortcut(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: UInt32(cmdKey | shiftKey), displayString: "⇧⌘ 2")
+            .captureDefault,
+            HotkeyShortcut(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: UInt32(controlKey | optionKey | cmdKey), displayString: "⌃⌥⌘ 4")
         ])
     ]
 }

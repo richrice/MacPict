@@ -3,6 +3,7 @@ import Combine
 import CoreGraphics
 import Foundation
 import OSLog
+import ServiceManagement
 
 @MainActor
 final class AppCoordinator: NSObject {
@@ -41,6 +42,7 @@ final class AppCoordinator: NSObject {
     private let saveLocation: any SaveLocationRequesting
     private let hotkey: GlobalHotkeyManager
     private let settings: SettingsStore
+    private let launchAtLogin: LaunchAtLogin
 
     /// Internal, not private, so the tests can assert on what the capture flow produced.
     private(set) var activeWindowController: AnnotationWindowController?
@@ -87,7 +89,8 @@ final class AppCoordinator: NSObject {
             delivery: DeliveryService(),
             saveLocation: SaveLocationPanel(),
             hotkey: GlobalHotkeyManager(),
-            settings: SettingsStore()
+            settings: SettingsStore(),
+            launchAtLogin: LaunchAtLogin(service: SMAppService.mainApp)
         )
     }
 
@@ -97,7 +100,8 @@ final class AppCoordinator: NSObject {
         delivery: any SnapshotDelivering,
         saveLocation: any SaveLocationRequesting,
         hotkey: GlobalHotkeyManager,
-        settings: SettingsStore
+        settings: SettingsStore,
+        launchAtLogin: LaunchAtLogin
     ) {
         self.permission = permission
         self.capture = capture
@@ -105,12 +109,14 @@ final class AppCoordinator: NSObject {
         self.saveLocation = saveLocation
         self.hotkey = hotkey
         self.settings = settings
+        self.launchAtLogin = launchAtLogin
         super.init()
     }
 
     func start() {
         NSApp.setActivationPolicy(.accessory)
         configureMenuBar()
+        launchAtLogin.enableOnFirstLaunch()
 
         hotkey.onTrigger = { [weak self] in self?.requestCapture() }
         // The user's stored choice, not the built-in default: the whole point of the setting
@@ -564,7 +570,11 @@ final class AppCoordinator: NSObject {
     /// Built on first use and retained: rebuilding it would discard the window's position and
     /// leave the previous one orphaned on screen. Shared by the status menu item and by ⌘,.
     @objc private func openSettingsWindow() {
-        let controller = settingsWindowController ?? SettingsWindowController(settings: settings, hotkey: hotkey)
+        let controller = settingsWindowController ?? SettingsWindowController(
+            settings: settings,
+            hotkey: hotkey,
+            launchAtLogin: launchAtLogin
+        )
         settingsWindowController = controller
         // PLAN R-6, for the same reason the annotation window is not presented under test:
         // `show()` activates the app and takes key focus, which would pull the developer out of

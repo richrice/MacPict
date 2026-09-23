@@ -36,6 +36,7 @@ targets:
       - sdk: Carbon.framework
       - sdk: CoreGraphics.framework
       - sdk: ScreenCaptureKit.framework
+      - sdk: ServiceManagement.framework
       - sdk: UniformTypeIdentifiers.framework
   MacPictTests:
     type: bundle.unit-test
