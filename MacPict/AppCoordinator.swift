@@ -19,6 +19,7 @@ final class AppCoordinator: NSObject {
         }
     }
 
+    private static let recentClipLimit = 3
     private static let saveFailureDescription = "Saving the image failed"
     private static let uploadFailureDescription = "Uploading the image failed"
 
@@ -61,10 +62,14 @@ final class AppCoordinator: NSObject {
     /// from one run to the next.
     private(set) var registeredShortcuts: [HotkeyShortcut] = []
 
+    /// Newest first, at most `recentClipLimit`. Kept for the life of the process only.
+    private(set) var recentClips: [DeliveredClip] = []
+
     /// Internal, not private, so the tests can assert on the two rows whose text is the only
     /// thing that tells the user a shortcut is not working.
     private(set) var captureItem: NSMenuItem?
     private(set) var hotkeyItem: NSMenuItem?
+    private(set) var recentClipsItem: NSMenuItem?
 
     /// Built on first request and reused, never rebuilt. Internal so the tests can prove that
     /// the menu item and ⌘, reach the same instance.
@@ -183,6 +188,7 @@ final class AppCoordinator: NSObject {
         messageItem = nil
         captureItem = nil
         hotkeyItem = nil
+        recentClipsItem = nil
         permissionItem = nil
     }
 
@@ -297,8 +303,11 @@ final class AppCoordinator: NSObject {
         do {
             let png = try exportedPNG(of: controller.document)
             switch action {
-            case .image: try delivery.copyImage(png)
-            case .path: try delivery.copyFilePath(png, timestamp: Date())
+            case .image:
+                record(DeliveredClip(content: .image, fileURL: try delivery.copyImage(png)))
+            case .path:
+                let url = try delivery.copyFilePath(png, timestamp: Date())
+                record(DeliveredClip(content: .path(url.path), fileURL: url))
             }
         } catch {
             // The window stays open. Destroying the user's annotations because a write
@@ -392,17 +401,55 @@ final class AppCoordinator: NSObject {
         from controller: AnnotationWindowController
     ) async {
         do {
-            try await delivery.uploadAndCopyRemotePath(
+            let uploaded = try await delivery.uploadAndCopyRemotePath(
                 png,
                 target: target,
                 timestamp: Date()
             )
+            record(DeliveredClip(content: .path(uploaded.remotePath), fileURL: uploaded.localURL))
         } catch {
             reportDeliveryFailure(Self.uploadFailureDescription, error: error, on: controller)
             return
         }
         clearMessage()
         dismiss(controller)
+        flashSuccess()
+    }
+
+    private func record(_ clip: DeliveredClip) {
+        recentClips.insert(clip, at: 0)
+        if recentClips.count > Self.recentClipLimit {
+            recentClips.removeLast()
+        }
+        refreshRecentClipsMenu()
+    }
+
+    private func refreshRecentClipsMenu() {
+        guard let item = recentClipsItem, let submenu = item.submenu else { return }
+        submenu.removeAllItems()
+        for (index, clip) in recentClips.enumerated() {
+            let row = NSMenuItem(title: clip.menuTitle, action: #selector(restoreClip(_:)), keyEquivalent: "")
+            row.target = self
+            // The row's position in `recentClips`. The list is rebuilt on every change, so the
+            // index cannot go stale while the menu is open.
+            row.tag = index
+            row.toolTip = clip.detail
+            row.image = clip.thumbnail()
+            submenu.addItem(row)
+        }
+        item.isEnabled = !recentClips.isEmpty
+    }
+
+    @objc private func restoreClip(_ sender: NSMenuItem) {
+        do {
+            try delivery.restore(recentClips[sender.tag])
+        } catch {
+            let detail = (error as? any LocalizedError)?.errorDescription
+                ?? String(describing: error)
+            report("Restoring the clip failed: \(detail)", to: AppLogger.delivery)
+            return
+        }
+        clearMessage()
         flashSuccess()
     }
 
@@ -467,6 +514,12 @@ final class AppCoordinator: NSObject {
         let captureRow = NSMenuItem(title: Self.captureTitle, action: #selector(requestCapture), keyEquivalent: "")
         captureRow.target = self
         menu.addItem(captureRow)
+
+        // Empty and disabled until the first delivery. The submenu is filled by `record(_:)`.
+        let recentClipsRow = NSMenuItem(title: "Recent Clips", action: nil, keyEquivalent: "")
+        recentClipsRow.submenu = NSMenu()
+        recentClipsRow.isEnabled = false
+        menu.addItem(recentClipsRow)
         menu.addItem(.separator())
 
         // Hidden until something goes wrong: an error the user cannot see is an error they
@@ -506,6 +559,7 @@ final class AppCoordinator: NSObject {
         messageItem = message
         captureItem = captureRow
         hotkeyItem = hotkeyStatus
+        recentClipsItem = recentClipsRow
         permissionItem = permissionStatus
         updateCaptureItem(for: hotkey.activeShortcut)
         refreshPermissionItem()

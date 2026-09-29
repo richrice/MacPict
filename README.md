@@ -108,6 +108,8 @@ MacPict uses non-interactive SSH with a ten-second connection timeout. If authen
 
 Every automatically saved copy is named `MacPict-<timestamp>.png`. If two copies happen in the same second, MacPict adds a numeric suffix rather than replacing the first one.
 
+If something else replaces your clipboard, open the menu-bar icon and choose **Recent Clips**. It lists the last three things MacPict copied (image, local path, or remote path), newest first, each with a small preview of the screenshot. Choose one to put it back on the clipboard. The list lives in memory, so it resets when MacPict quits, and a clip needs its screenshot file to still exist, or its preview is blank and an image clip cannot be restored.
+
 A capture opens with the **crop tool already selected**, because the usual first move is to tighten the shot to what matters. Once you crop, the tool reverts to whatever you had before, so you land straight in annotating.
 
 The pointer tells you which mode you are in: a crosshair for crop and the four shape tools, an I-beam for text.

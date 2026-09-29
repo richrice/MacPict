@@ -72,15 +72,27 @@ private final class FakeDelivery: SnapshotDelivering {
     private(set) var uploadTargets: [String] = []
     private(set) var savedImages: [Data] = []
     private(set) var savedURLs: [URL] = []
+    private(set) var restoredClips: [DeliveredClip] = []
+    /// When set, `copyImage` writes the PNG here and returns that file, so a test can read it
+    /// back. Left `nil`, it returns a path that does not exist.
+    var fileDirectory: URL?
     var error: (any Error)?
 
     enum Failure: Error {
         case refused
     }
 
-    func copyImage(_ png: Data) throws {
+    @discardableResult
+    func copyImage(_ png: Data) throws -> URL {
         if let error { throw error }
         copiedImages.append(png)
+        let name = "MacPict-fake-image-\(copiedImages.count).png"
+        guard let fileDirectory else {
+            return URL(fileURLWithPath: "/tmp/MacPict/\(name)")
+        }
+        let url = fileDirectory.appendingPathComponent(name)
+        try png.write(to: url)
+        return url
     }
 
     @discardableResult
@@ -90,17 +102,29 @@ private final class FakeDelivery: SnapshotDelivering {
         return URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake.png")
     }
 
-    func uploadAndCopyRemotePath(_ png: Data, target: String, timestamp: Date) async throws -> String {
+    func uploadAndCopyRemotePath(
+        _ png: Data,
+        target: String,
+        timestamp: Date
+    ) async throws -> (remotePath: String, localURL: URL) {
         if let error { throw error }
         uploadedImages.append(png)
         uploadTargets.append(target)
-        return "/home/test/.cache/macpict/MacPict-fake.png"
+        return (
+            "/home/test/.cache/macpict/MacPict-fake.png",
+            URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake-upload.png")
+        )
     }
 
     func save(_ png: Data, to url: URL) throws {
         if let error { throw error }
         savedImages.append(png)
         savedURLs.append(url)
+    }
+
+    func restore(_ clip: DeliveredClip) throws {
+        if let error { throw error }
+        restoredClips.append(clip)
     }
 }
 
@@ -764,6 +788,131 @@ final class CoordinatorTests: XCTestCase {
         // No ⌘, on the status menu item: ⌘, is routed from the app menu through
         // `.macPictOpenSettings` instead, so there is only one binding for it.
         XCTAssertEqual(menu.items[settingsIndex].keyEquivalent, "")
+    }
+
+    // MARK: - Recent clips
+
+    private func deliverImage() async throws {
+        await runCapture()
+        coordinator.annotationWindowDidRequestCopyImage(try XCTUnwrap(coordinator.activeWindowController))
+    }
+
+    private func recentClipRows() throws -> [NSMenuItem] {
+        let item = try XCTUnwrap(coordinator.recentClipsItem)
+        return try XCTUnwrap(item.submenu).items
+    }
+
+    func testTheRecentClipsRowIsDisabledUntilSomethingIsDelivered() throws {
+        coordinator.start()
+
+        let item = try XCTUnwrap(coordinator.recentClipsItem)
+        XCTAssertFalse(item.isEnabled)
+        XCTAssertEqual(try recentClipRows().count, 0)
+    }
+
+    func testEachKindOfDeliveryAppearsAsARowInTheRecentClipsSubmenu() async throws {
+        coordinator.start()
+        settings.sshTarget = "devbox"
+
+        try await deliverImage()
+        await runCapture()
+        coordinator.annotationWindowDidRequestCopyPath(try XCTUnwrap(coordinator.activeWindowController))
+        await runCapture()
+        coordinator.annotationWindowDidRequestUpload(try XCTUnwrap(coordinator.activeWindowController))
+        await coordinator.uploadTask?.value
+
+        XCTAssertTrue(try XCTUnwrap(coordinator.recentClipsItem).isEnabled)
+        XCTAssertEqual(
+            try recentClipRows().map(\.title),
+            [
+                "Path — MacPict-fake.png",
+                "Path — MacPict-fake.png",
+                "Image — MacPict-fake-image-1.png"
+            ]
+        )
+    }
+
+    func testOnlyTheThreeNewestClipsAreKeptNewestFirst() async throws {
+        coordinator.start()
+
+        for _ in 1...4 {
+            try await deliverImage()
+        }
+
+        XCTAssertEqual(
+            coordinator.recentClips,
+            (2...4).reversed().map {
+                DeliveredClip(
+                    content: .image,
+                    fileURL: URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake-image-\($0).png")
+                )
+            }
+        )
+        XCTAssertEqual(try recentClipRows().count, 3)
+    }
+
+    func testEveryKindOfClipShowsAThumbnailWhenItsFileExists() async throws {
+        coordinator.start()
+        try FileManager.default.createDirectory(at: saveDirectory, withIntermediateDirectories: true)
+        let directory = try XCTUnwrap(saveDirectory)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        delivery.fileDirectory = saveDirectory
+
+        try await deliverImage()
+
+        XCTAssertNotNil(try XCTUnwrap(try recentClipRows().first).image)
+    }
+
+    func testARowWhoseFileIsGoneStillAppearsWithoutAThumbnail() async throws {
+        coordinator.start()
+
+        try await deliverImage()
+
+        let row = try XCTUnwrap(try recentClipRows().first)
+        XCTAssertNil(row.image)
+        XCTAssertEqual(row.title, "Image — MacPict-fake-image-1.png")
+    }
+
+    func testAFailedDeliveryIsNotRecorded() async throws {
+        coordinator.start()
+        await runCapture()
+        delivery.error = FakeDelivery.Failure.refused
+
+        coordinator.annotationWindowDidRequestCopyImage(try XCTUnwrap(coordinator.activeWindowController))
+
+        XCTAssertEqual(coordinator.recentClips, [])
+        XCTAssertEqual(try recentClipRows().count, 0)
+    }
+
+    func testChoosingARecentClipPutsThatClipBackOnThePasteboard() async throws {
+        coordinator.start()
+        try await deliverImage()
+        try await deliverImage()
+
+        let row = try XCTUnwrap(try recentClipRows().last)
+        _ = try XCTUnwrap(row.target).perform(try XCTUnwrap(row.action), with: row)
+
+        XCTAssertEqual(
+            delivery.restoredClips,
+            [DeliveredClip(
+                content: .image,
+                fileURL: URL(fileURLWithPath: "/tmp/MacPict/MacPict-fake-image-1.png")
+            )]
+        )
+        // Restoring is not a new delivery, so the list does not change.
+        XCTAssertEqual(coordinator.recentClips.count, 2)
+    }
+
+    func testARestoreThatFailsShowsTheErrorInTheMenu() async throws {
+        coordinator.start()
+        try await deliverImage()
+        delivery.error = FakeDelivery.Failure.refused
+
+        let row = try XCTUnwrap(try recentClipRows().first)
+        _ = try XCTUnwrap(row.target).perform(try XCTUnwrap(row.action), with: row)
+
+        let menu = try XCTUnwrap(coordinator.captureItem?.menu)
+        XCTAssertNotNil(menu.items.first { $0.title == "Restoring the clip failed: refused" && !$0.isHidden })
     }
 
     // MARK: - Recovery from a shortcut that will not register

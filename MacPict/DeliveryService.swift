@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
 
 enum DeliveryError: Error, Equatable, LocalizedError {
@@ -8,6 +9,7 @@ enum DeliveryError: Error, Equatable, LocalizedError {
     case sshTargetMissing
     case invalidSSHTarget
     case sshUploadFailed(String)
+    case clipFileUnreadable(String)
 
     var errorDescription: String? {
         switch self {
@@ -21,7 +23,61 @@ enum DeliveryError: Error, Equatable, LocalizedError {
             "The SSH target must be a host, user@host, or SSH config alias without spaces or options."
         case .sshUploadFailed(let message):
             message
+        case .clipFileUnreadable(let message):
+            message
         }
+    }
+}
+
+/// What a delivery put on the pasteboard, kept so the user can put it there again after
+/// something else replaces it. It holds the file the delivery wrote, not the bytes, so three
+/// clips do not hold three full-size PNGs in memory.
+struct DeliveredClip: Equatable {
+    enum Content: Equatable {
+        case image
+        /// The text on the pasteboard: a local path, or the path on the SSH target.
+        case path(String)
+    }
+
+    let content: Content
+    /// The local PNG the delivery wrote. It is the source of the thumbnail for every kind of clip,
+    /// and of the bytes when the clip is an image.
+    let fileURL: URL
+
+    var menuTitle: String {
+        switch content {
+        case .image: "Image — \(fileURL.lastPathComponent)"
+        case .path(let path): "Path — \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+    }
+
+    var detail: String {
+        switch content {
+        case .image: fileURL.path
+        case .path(let path): path
+        }
+    }
+
+    /// The longest side of a thumbnail, in pixels: 96 points on a 2x display.
+    private static let thumbnailPixelSize = 192
+
+    /// Decodes a reduced copy of the file, never the full image. Returns `nil`, and logs, when the
+    /// file is gone or unreadable: a missing picture must not stop the menu from opening.
+    func thumbnail() -> NSImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.thumbnailPixelSize
+        ]
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            AppLogger.delivery.error("Could not make a thumbnail from \(fileURL.path, privacy: .public)")
+            return nil
+        }
+        return NSImage(
+            cgImage: image,
+            size: NSSize(width: image.width / 2, height: image.height / 2)
+        )
     }
 }
 
@@ -32,11 +88,17 @@ enum DeliveryOutcome: Equatable, Sendable {
 
 @MainActor
 protocol SnapshotDelivering: AnyObject {
-    func copyImage(_ png: Data) throws
+    @discardableResult func copyImage(_ png: Data) throws -> URL
     @discardableResult func copyFilePath(_ png: Data, timestamp: Date) throws -> URL
     @discardableResult
-    func uploadAndCopyRemotePath(_ png: Data, target: String, timestamp: Date) async throws -> String
+    func uploadAndCopyRemotePath(
+        _ png: Data,
+        target: String,
+        timestamp: Date
+    ) async throws -> (remotePath: String, localURL: URL)
     func save(_ png: Data, to url: URL) throws
+    /// Puts an earlier clip on the pasteboard again. It writes no new file.
+    func restore(_ clip: DeliveredClip) throws
 }
 
 /// Asking the user where to put the PNG. Behind a protocol for one reason: the real
@@ -136,9 +198,39 @@ final class DeliveryService: SnapshotDelivering {
         self.sshExecutableURL = sshExecutableURL
     }
 
-    func copyImage(_ png: Data) throws {
+    @discardableResult
+    func copyImage(_ png: Data) throws -> URL {
         let url = try write(png, timestamp: Date())
+        try putImageOnPasteboard(png)
 
+        AppLogger.delivery.info(
+            "Wrote snapshot to \(url.path, privacy: .public) and copied \(png.count, privacy: .public) PNG bytes"
+        )
+        return url
+    }
+
+    func restore(_ clip: DeliveredClip) throws {
+        switch clip.content {
+        case .image:
+            let png: Data
+            do {
+                png = try Data(contentsOf: clip.fileURL)
+            } catch {
+                throw DeliveryError.clipFileUnreadable(
+                    "Could not read \(clip.fileURL.path): \(error.localizedDescription)"
+                )
+            }
+            try putImageOnPasteboard(png)
+        case .path(let path):
+            pasteboard.clearContents()
+            guard pasteboard.setString(path, forType: .string) else {
+                throw DeliveryError.pasteboardWriteFailed
+            }
+        }
+        AppLogger.delivery.info("Restored a clip to the pasteboard")
+    }
+
+    private func putImageOnPasteboard(_ png: Data) throws {
         pasteboard.clearContents()
         guard pasteboard.setData(png, forType: .png) else {
             AppLogger.delivery.error("Pasteboard rejected the PNG representation")
@@ -154,10 +246,6 @@ final class DeliveryService: SnapshotDelivering {
         } else {
             AppLogger.delivery.error("Could not derive a TIFF representation from the PNG")
         }
-
-        AppLogger.delivery.info(
-            "Wrote snapshot to \(url.path, privacy: .public) and copied \(png.count, privacy: .public) PNG bytes"
-        )
     }
 
     @discardableResult
@@ -179,7 +267,7 @@ final class DeliveryService: SnapshotDelivering {
         _ png: Data,
         target rawTarget: String,
         timestamp: Date
-    ) async throws -> String {
+    ) async throws -> (remotePath: String, localURL: URL) {
         let target = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else {
             throw DeliveryError.sshTargetMissing
@@ -240,7 +328,7 @@ final class DeliveryService: SnapshotDelivering {
         AppLogger.delivery.info(
             "Uploaded \(png.count, privacy: .public) PNG bytes to \(target, privacy: .public):\(remotePath, privacy: .public) and copied the remote path"
         )
-        return remotePath
+        return (remotePath, localURL)
     }
 
     /// Writes to a location the user picked, so unlike `copyFilePath` there is no name to

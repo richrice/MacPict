@@ -65,11 +65,11 @@ final class DeliveryServiceTests: XCTestCase {
     }
 
     /// A real, decodable PNG whose bytes differ per `red` value.
-    private func makePNG(red: CGFloat) throws -> Data {
+    private func makePNG(red: CGFloat, width: Int = 4, height: Int = 3) throws -> Data {
         let rep = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: 4,
-            pixelsHigh: 3,
+            pixelsWide: width,
+            pixelsHigh: height,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -82,7 +82,7 @@ final class DeliveryServiceTests: XCTestCase {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         NSColor(srgbRed: red, green: 0.25, blue: 0.5, alpha: 1).setFill()
-        NSBezierPath(rect: CGRect(x: 0, y: 0, width: 4, height: 3)).fill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: width, height: height)).fill()
         NSGraphicsContext.restoreGraphicsState()
         return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
     }
@@ -106,6 +106,67 @@ final class DeliveryServiceTests: XCTestCase {
         XCTAssertTrue(archived.lastPathComponent.hasPrefix("MacPict-"), archived.lastPathComponent)
         XCTAssertEqual(archived.pathExtension, "png")
         XCTAssertEqual(try Data(contentsOf: archived), png)
+    }
+
+    func testCopyImageReturnsTheURLOfTheFileItWrote() throws {
+        let png = try makePNG(red: 0.9)
+        let url = try makeService().copyImage(png)
+
+        // Names, not URLs: the temporary directory is reached through the `/var` symlink, which
+        // the directory listing resolves to `/private/var`.
+        XCTAssertEqual(try archivedPNGs().map(\.lastPathComponent), [url.lastPathComponent])
+        XCTAssertEqual(try Data(contentsOf: url), png)
+    }
+
+    func testRestoringAnImageClipPutsTheFileBytesOnThePasteboardAndWritesNoNewFile() throws {
+        let service = makeService()
+        let png = try makePNG(red: 0.9)
+        let url = try service.copyImage(png)
+        pasteboard.clearContents()
+
+        try service.restore(DeliveredClip(content: .image, fileURL: url))
+
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+        XCTAssertNotNil(pasteboard.data(forType: .tiff))
+        XCTAssertEqual(try archivedPNGs().map(\.lastPathComponent), [url.lastPathComponent])
+    }
+
+    func testRestoringAPathClipPutsTheStringOnThePasteboard() throws {
+        try makeService().restore(DeliveredClip(
+            content: .path("/home/test/.cache/macpict/MacPict-x.png"),
+            fileURL: directory.appendingPathComponent("MacPict-x.png")
+        ))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "/home/test/.cache/macpict/MacPict-x.png")
+    }
+
+    func testRestoringAnImageClipWhoseFileIsGoneThrowsAndLeavesThePasteboardAlone() throws {
+        pasteboard.clearContents()
+        pasteboard.setString("keep me", forType: .string)
+        let missing = directory.appendingPathComponent("MacPict-gone.png")
+
+        XCTAssertThrowsError(try makeService().restore(DeliveredClip(content: .image, fileURL: missing))) { error in
+            guard case DeliveryError.clipFileUnreadable = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep me")
+    }
+
+    func testAThumbnailKeepsTheAspectRatioAndFitsWithinNinetySixPoints() throws {
+        let url = directory.appendingPathComponent("wide.png")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try makePNG(red: 0.9, width: 400, height: 200).write(to: url)
+
+        let thumbnail = try XCTUnwrap(DeliveredClip(content: .image, fileURL: url).thumbnail())
+
+        XCTAssertEqual(thumbnail.size, NSSize(width: 96, height: 48))
+    }
+
+    func testAThumbnailOfAMissingFileIsNil() {
+        let missing = directory.appendingPathComponent("gone.png")
+
+        XCTAssertNil(DeliveredClip(content: .image, fileURL: missing).thumbnail())
     }
 
     func testCopyImageAlsoProvidesATIFFRepresentation() throws {
@@ -181,9 +242,10 @@ final class DeliveryServiceTests: XCTestCase {
         let result = try await makeService(sshExecutableURL: executable)
             .uploadAndCopyRemotePath(png, target: "devbox", timestamp: try fixedTimestamp())
 
-        XCTAssertEqual(result, remotePath)
+        XCTAssertEqual(result.remotePath, remotePath)
         XCTAssertEqual(try Data(contentsOf: uploaded), png)
         XCTAssertEqual(pasteboard.string(forType: .string), remotePath)
+        XCTAssertEqual(result.localURL.lastPathComponent, "MacPict-2026-07-25-143012.png")
         XCTAssertEqual(
             try Data(contentsOf: directory.appendingPathComponent("MacPict-2026-07-25-143012.png")),
             png
@@ -208,7 +270,7 @@ final class DeliveryServiceTests: XCTestCase {
         let result = try await makeService(sshExecutableURL: executable)
             .uploadAndCopyRemotePath(png, target: "devbox", timestamp: try fixedTimestamp())
 
-        XCTAssertEqual(result, expectedPath)
+        XCTAssertEqual(result.remotePath, expectedPath)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: expectedPath)), png)
     }
 
